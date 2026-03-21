@@ -1,79 +1,93 @@
 package eu.kanade.tachiyomi.extension.en.toonily
 
-import eu.kanade.tachiyomi.lib.cookieinterceptor.CookieInterceptor
 import eu.kanade.tachiyomi.multisrc.madara.Madara
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.model.FilterList
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.OkHttpClient
+import eu.kanade.tachiyomi.source.model.SManga
+import keiyoushi.lib.cookieinterceptor.CookieInterceptor
+import okhttp3.Interceptor
 import okhttp3.Request
+import okhttp3.Response
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-private const val domain = "toonily.com"
-class Toonily : Madara(
-    "Toonily",
-    "https://$domain",
-    "en",
-    SimpleDateFormat("MMM d, yy", Locale.US),
-) {
+private const val DOMAIN = "toonily.com"
 
-    override val client: OkHttpClient = super.client.newBuilder()
-        .addNetworkInterceptor(CookieInterceptor(domain, "toonily-mature" to "1"))
+class Toonily :
+    Madara(
+        "Toonily",
+        "https://$DOMAIN",
+        "en",
+        SimpleDateFormat("MMM d, yy", Locale.US),
+    ) {
+    override val client = super.client.newBuilder()
+        .addNetworkInterceptor(CookieInterceptor(DOMAIN, "toonily-mature" to "1"))
+        .addInterceptor(::hdCoverInterceptor)
         .build()
 
-    override val mangaSubString = "webtoon"
-
-    private fun searchPage(page: Int, query: String): String {
-        val urlQuery = query.trim()
-            .lowercase(Locale.US)
-            .replace(titleSpecialCharactersRegex, "-")
-            .replace(trailingHyphenRegex, "")
-            .let { if (it.isNotEmpty()) "$it/" else it }
-        return if (page > 1) {
-            "search/${urlQuery}page/$page/"
-        } else {
-            "search/$urlQuery"
-        }
-    }
-
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val request = super.searchMangaRequest(page, query, filters)
-
-        val queries = request.url.queryParameterNames
-            .filterNot { it == "s" }
-
-        val newUrl = "$baseUrl/${searchPage(page, query)}".toHttpUrl().newBuilder().apply {
-            queries.map { q ->
-                request.url.queryParameterValues(q).map {
-                    this.addQueryParameter(q, it)
-                }
-            }
-        }.build()
-
-        return request.newBuilder()
-            .url(newUrl)
-            .build()
-    }
-
-    override fun genresRequest(): Request {
-        return GET("$baseUrl/search/?post_type=wp-manga", headers)
-    }
-
-    // The source customized the Madara theme and broke the filter.
+    override val mangaSubString = "serie"
     override val filterNonMangaItems = false
-
-    override val useNewChapterEndpoint: Boolean = true
+    override val useNewChapterEndpoint = true
+    override val sendViewCount = false
+    override val useLoadMoreRequest = LoadMoreStrategy.Always
 
     override fun searchMangaSelector() = "div.page-item-detail.manga"
+
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = super.searchMangaRequest(
+        page,
+        query.replace(titleSpecialCharactersRegex, " ").trim(),
+        filters,
+    )
+
+    override fun genresRequest(): Request = GET("$baseUrl/search/?post_type=wp-manga", headers)
+
+    override fun mangaDetailsRequest(manga: SManga): Request {
+        val newManga = SManga.create().apply {
+            url = manga.url.replace("/webtoon/", "/$mangaSubString/")
+        }
+        return super.mangaDetailsRequest(newManga)
+    }
+
+    override fun chapterListRequest(manga: SManga): Request = mangaDetailsRequest(manga)
 
     override fun parseChapterDate(date: String?): Long {
         val formattedDate = if (date?.contains("UP") == true) "today" else date
         return super.parseChapterDate(formattedDate)
     }
 
+    private fun hdCoverInterceptor(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val url = request.url
+
+        return if (
+            url.host.startsWith("static") && // covers are hosted on the static cdn, panels on data cdn
+            url.pathSegments.lastOrNull()?.contains(sdCoverRegex) == true
+        ) {
+            try {
+                val newUrl = url.newBuilder()
+                    .removePathSegment(url.pathSegments.lastIndex)
+                    .addPathSegment(
+                        sdCoverRegex.replace(
+                            url.pathSegments.last(),
+                            "$1",
+                        ),
+                    ).build()
+                val newRequest = request.newBuilder()
+                    .url(newUrl)
+                    .build()
+
+                chain.proceed(newRequest)
+                    .also { assert(it.isSuccessful) }
+            } catch (_: Throwable) {
+                chain.proceed(request)
+            }
+        } else {
+            chain.proceed(request)
+        }
+    }
+
     companion object {
         val titleSpecialCharactersRegex = "[^a-z0-9]+".toRegex()
-        val trailingHyphenRegex = "-+$".toRegex()
+        val sdCoverRegex = Regex("""-[0-9]+x[0-9]+(\.\w+)$""")
     }
 }

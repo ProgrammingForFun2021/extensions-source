@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.all.photos18
 
-import android.app.Application
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.network.GET
@@ -13,6 +12,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferencesLazy
 import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -21,10 +21,10 @@ import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.select.Evaluator
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 
-class Photos18 : HttpSource(), ConfigurableSource {
+class Photos18 :
+    HttpSource(),
+    ConfigurableSource {
     override val name = "Photos18"
     override val lang = "all"
     override val supportsLatest = true
@@ -122,24 +122,25 @@ class Photos18 : HttpSource(), ConfigurableSource {
         private val queryValues: Array<String>,
         state: Int = 0,
     ) : Filter.Select<String>(name, values, state) {
-        fun addQueryTo(builder: HttpUrl.Builder) =
-            builder.addQueryParameter(queryName, queryValues[state])
+        fun addQueryTo(builder: HttpUrl.Builder) = builder.addQueryParameter(queryName, queryValues[state])
     }
 
-    private class SortFilter : QueryFilter(
-        "Sort by",
-        arrayOf("Latest", "Popular", "Trend", "Recommended", "Best"),
-        "sort",
-        arrayOf("created", "hits", "views", "score", "likes"),
-        state = 2,
-    )
+    private class SortFilter :
+        QueryFilter(
+            "Sort by",
+            arrayOf("Latest", "Popular", "Trend", "Recommended", "Best"),
+            "sort",
+            arrayOf("created", "hits", "views", "score", "likes"),
+            state = 2,
+        )
 
-    private class CategoryFilter(categories: List<Pair<String, String>>) : QueryFilter(
-        "Category",
-        categories.map { it.first }.toTypedArray(),
-        "category_id",
-        categories.map { it.second }.toTypedArray(),
-    )
+    private class CategoryFilter(categories: List<Pair<String, String>>) :
+        QueryFilter(
+            "Category",
+            categories.map { it.first }.toTypedArray(),
+            "category_id",
+            categories.map { it.second }.toTypedArray(),
+        )
 
     private var categories: List<Pair<String, String>> = emptyList()
 
@@ -156,9 +157,7 @@ class Photos18 : HttpSource(), ConfigurableSource {
         }
     }
 
-    private val preferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)!!
-    }
+    private val preferences by getPreferencesLazy()
 
     private val useTrad get() = preferences.getBoolean("ZH_HANT", false)
 

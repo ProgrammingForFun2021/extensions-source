@@ -1,7 +1,7 @@
 package eu.kanade.tachiyomi.extension.zh.baozimanhua
 
-import android.app.Application
 import android.content.SharedPreferences
+import androidx.preference.CheckBoxPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import com.github.stevenyomi.baozibanner.BaoziBanner
@@ -16,6 +16,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferences
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
@@ -23,19 +24,18 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.jsoup.select.Evaluator
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class Baozi : ParsedHttpSource(), ConfigurableSource {
+class Baozi :
+    ParsedHttpSource(),
+    ConfigurableSource {
 
     override val id = 5724751873601868259
 
     override val name = "包子漫画"
 
-    private val preferences: SharedPreferences =
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
+    private val preferences: SharedPreferences = getPreferences()
 
     private val domain: String = run {
         val mirrors = MIRRORS
@@ -93,21 +93,17 @@ class Baozi : ParsedHttpSource(), ConfigurableSource {
         }
     }
 
-    override fun chapterFromElement(element: Element): SChapter {
-        return SChapter.create().apply {
-            setUrlWithoutDomain(element.select("a").attr("href").trim())
-            name = element.text()
-        }
+    override fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
+        setUrlWithoutDomain(element.select("a").attr("href").trim())
+        name = element.text()
     }
 
     override fun popularMangaSelector(): String = "div.pure-g div a.comics-card__poster"
 
-    override fun popularMangaFromElement(element: Element): SManga {
-        return SManga.create().apply {
-            setUrlWithoutDomain(element.attr("href").trim())
-            title = element.attr("title").trim()
-            thumbnail_url = element.select("> amp-img").attr("src").trim()
-        }
+    override fun popularMangaFromElement(element: Element): SManga = SManga.create().apply {
+        setUrlWithoutDomain(element.attr("href").trim())
+        title = element.attr("title").trim()
+        thumbnail_url = element.select("> amp-img").attr("src").trim()
     }
 
     override fun popularMangaNextPageSelector(): String? = null
@@ -121,39 +117,37 @@ class Baozi : ParsedHttpSource(), ConfigurableSource {
 
     override fun latestUpdatesSelector(): String = "div.pure-g div a.comics-card__poster"
 
-    override fun latestUpdatesFromElement(element: Element): SManga {
-        return popularMangaFromElement(element)
-    }
+    override fun latestUpdatesFromElement(element: Element): SManga = popularMangaFromElement(element)
 
     override fun latestUpdatesNextPageSelector(): String? = null
 
     override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/list/new", headers)
 
-    override fun mangaDetailsParse(document: Document): SManga {
-        return SManga.create().apply {
-            title = document.select("h1.comics-detail__title").text()
-            thumbnail_url = document.select("div.pure-g div > amp-img").attr("src").trim()
-            author = document.select("h2.comics-detail__author").text()
-            description = document.select("p.comics-detail__desc").text()
-            status = when (document.selectFirst("div.tag-list > span.tag")!!.text()) {
-                "连载中", "連載中" -> SManga.ONGOING
-                "已完结", "已完結" -> SManga.COMPLETED
-                else -> SManga.UNKNOWN
-            }
+    override fun mangaDetailsParse(document: Document): SManga = SManga.create().apply {
+        title = document.select("h1.comics-detail__title").text()
+        thumbnail_url = document.select("div.pure-g div > amp-img").attr("src").trim()
+        author = document.select("h2.comics-detail__author").text()
+        description = document.select("p.comics-detail__desc").text()
+        status = when (document.selectFirst("div.tag-list > span.tag")!!.text()) {
+            "连载中", "連載中" -> SManga.ONGOING
+            "已完结", "已完結" -> SManga.COMPLETED
+            else -> SManga.UNKNOWN
         }
     }
 
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> = Observable.fromCallable {
-        val pathToUrl = LinkedHashMap<String, String>()
-        var request = GET(baseUrl + chapter.url, headers).newBuilder()
-            .tag(RedirectDomainInterceptor.Tag::class, RedirectDomainInterceptor.Tag()).build()
+        val urls = mutableListOf<String>()
+
+        var chapterUrl = baseUrl + chapter.url
+        if (preferences.getBoolean(QUICK_PAGES_PREF, true)) {
+            chapterUrl = quickPageUrl(chapterUrl)
+        }
+
+        var request = GET(chapterUrl, headers).newBuilder().build()
         while (true) {
             val document = client.newCall(request).execute().asJsoup()
-            for (element in document.select(".comic-contain amp-img")) {
-                val imageUrl = element.attr("data-src")
-                val path = imageUrl.substring(imageUrl.indexOf('/', startIndex = 8)) // Skip "https://"
-                pathToUrl[path] = imageUrl
-            }
+            urls.addAll(document.select(".comic-contain amp-img").map { it.absUrl("src") })
+
             val url = document.selectFirst(Evaluator.Id("next-chapter"))
                 ?.takeIf {
                     val text = it.text()
@@ -161,10 +155,18 @@ class Baozi : ParsedHttpSource(), ConfigurableSource {
                 }
                 ?.attr("href")
                 ?: break
+
             request = GET(url, headers)
         }
-        pathToUrl.values.mapIndexed { index, imageUrl -> Page(index, imageUrl = imageUrl) }
+        urls.mapIndexed { index, imageUrl -> Page(index, imageUrl = imageUrl) }
     }
+
+    private fun quickPageUrl(url: String): String = baseUrl.toHttpUrl().newBuilder().apply {
+        val chapUrl = url.toHttpUrl()
+        addPathSegments("/comic/chapter")
+        chapUrl.queryParameter("comic_id")?.let { addPathSegment(it) }
+        addPathSegment("${chapUrl.queryParameter("section_slot")}_${chapUrl.queryParameter("chapter_slot")}.html")
+    }.build().toString()
 
     override fun imageRequest(page: Page): Request {
         val url = page.imageUrl!!.replace(".baozicdn.com", ".baozimh.com")
@@ -181,15 +183,13 @@ class Baozi : ParsedHttpSource(), ConfigurableSource {
 
     override fun searchMangaNextPageSelector() = throw UnsupportedOperationException()
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return if (query.startsWith(ID_SEARCH_PREFIX)) {
-            val id = query.removePrefix(ID_SEARCH_PREFIX)
-            client.newCall(searchMangaByIdRequest(id))
-                .asObservableSuccess()
-                .map { response -> searchMangaByIdParse(response, id) }
-        } else {
-            super.fetchSearchManga(page, query, filters)
-        }
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.startsWith(ID_SEARCH_PREFIX)) {
+        val id = query.removePrefix(ID_SEARCH_PREFIX)
+        client.newCall(searchMangaByIdRequest(id))
+            .asObservableSuccess()
+            .map { response -> searchMangaByIdParse(response, id) }
+    } else {
+        super.fetchSearchManga(page, query, filters)
     }
 
     private fun searchMangaByIdRequest(id: String) = GET("$baseUrl/comic/$id", headers)
@@ -271,6 +271,13 @@ class Baozi : ParsedHttpSource(), ConfigurableSource {
             entryValues = arrayOf(CHAPTER_ORDER_DISABLED, CHAPTER_ORDER_ENABLED, CHAPTER_ORDER_AGGRESSIVE)
             setDefaultValue(CHAPTER_ORDER_DISABLED)
         }.let { screen.addPreference(it) }
+
+        CheckBoxPreference(screen.context).apply {
+            key = QUICK_PAGES_PREF
+            title = "Quick Pages/快速页面"
+            summary = "跳过页面上的重定向。五月休息。(对不起，必须使用翻译器)"
+            setDefaultValue(true)
+        }.let { screen.addPreference(it) }
     }
 
     companion object {
@@ -303,5 +310,7 @@ class Baozi : ParsedHttpSource(), ConfigurableSource {
         private const val CHAPTER_ORDER_AGGRESSIVE = "2"
 
         private val DATE_FORMAT by lazy { SimpleDateFormat("yyyy年MM月dd日", Locale.ENGLISH) }
+
+        private const val QUICK_PAGES_PREF = "QUICK_PAGES"
     }
 }

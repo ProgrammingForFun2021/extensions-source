@@ -1,14 +1,10 @@
 package eu.kanade.tachiyomi.extension.all.projectsuki
 
-import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.lib.randomua.addRandomUAPreferenceToScreen
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.util.Locale
 
 /**
@@ -20,9 +16,7 @@ private inline val INFO: Nothing get() = error("INFO")
 /**
  * @author Federico d'Alonzo &lt;me@npgx.dev&gt;
  */
-class ProjectSukiPreferences(id: Long) {
-
-    internal val shared by lazy { Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000) }
+class ProjectSukiPreferences(internal val shared: SharedPreferences) {
 
     abstract inner class PSPreference<Raw : Any, T : Any>(val preferenceIdentifier: String, val default: Raw) {
 
@@ -59,11 +53,9 @@ class ProjectSukiPreferences(id: Long) {
 
     val whitelistedLanguages = object : PSPreference<String, Set<String>>("$SHORT_FORM_ID-languages-whitelist", "") {
         override val rawGet: SharedPreferences.(identifier: String, default: String) -> String = { id, def -> getString(id, def)!! }
-        override fun String.transform(): Set<String> {
-            return split(',')
-                .filter { it.isNotBlank() }
-                .mapTo(HashSet()) { it.trim().lowercase(Locale.US) }
-        }
+        override fun String.transform(): Set<String> = split(',')
+            .filter { it.isNotBlank() }
+            .mapTo(HashSet()) { it.trim().lowercase(Locale.US) }
 
         override fun PreferenceScreen.constructPreference() = EditTextPreference(context).apply {
             key = preferenceIdentifier
@@ -84,11 +76,9 @@ class ProjectSukiPreferences(id: Long) {
 
     val blacklistedLanguages = object : PSPreference<String, Set<String>>("$SHORT_FORM_ID-languages-blacklist", "") {
         override val rawGet: SharedPreferences.(identifier: String, default: String) -> String = { id, def -> getString(id, def)!! }
-        override fun String.transform(): Set<String> {
-            return split(",")
-                .filter { it.isNotBlank() }
-                .mapTo(HashSet()) { it.trim().lowercase(Locale.US) }
-        }
+        override fun String.transform(): Set<String> = split(",")
+            .filter { it.isNotBlank() }
+            .mapTo(HashSet()) { it.trim().lowercase(Locale.US) }
 
         override fun PreferenceScreen.constructPreference() = EditTextPreference(context).apply {
             key = preferenceIdentifier
@@ -108,8 +98,6 @@ class ProjectSukiPreferences(id: Long) {
     }
 
     fun PreferenceScreen.configure() {
-        addRandomUAPreferenceToScreen(this)
-
         addPreference(defaultSearchMode.run { constructPreference() })
         addPreference(whitelistedLanguages.run { constructPreference() })
         addPreference(blacklistedLanguages.run { constructPreference() })

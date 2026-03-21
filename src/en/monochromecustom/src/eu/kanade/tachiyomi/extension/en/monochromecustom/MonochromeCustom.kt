@@ -1,15 +1,14 @@
 package eu.kanade.tachiyomi.extension.en.monochromecustom
 
-import android.app.Application
 import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.multisrc.monochrome.MonochromeCMS
 import eu.kanade.tachiyomi.source.ConfigurableSource
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
+import keiyoushi.utils.getPreferencesLazy
 
-class MonochromeCustom : ConfigurableSource,
-    MonochromeCMS("Monochrome Custom", "", "en") {
+class MonochromeCustom :
+    MonochromeCMS("Monochrome Custom", "", "en"),
+    ConfigurableSource {
     override val baseUrl by lazy {
         preferences.getString("baseUrl", DEMO_BASE_URL)!!
     }
@@ -18,9 +17,7 @@ class MonochromeCustom : ConfigurableSource,
         preferences.getString("apiUrl", DEMO_API_URL)!!
     }
 
-    private val preferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)!!
-    }
+    private val preferences by getPreferencesLazy()
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         EditTextPreference(screen.context).apply {

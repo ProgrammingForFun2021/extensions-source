@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.multisrc.foolslide
 
-import android.app.Application
 import androidx.preference.CheckBoxPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
@@ -12,6 +11,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
+import keiyoushi.utils.getPreferencesLazy
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -34,7 +34,8 @@ abstract class FoolSlide(
     override val baseUrl: String,
     override val lang: String,
     open val urlModifier: String = "",
-) : ConfigurableSource, ParsedHttpSource() {
+) : ParsedHttpSource(),
+    ConfigurableSource {
 
     override val supportsLatest = true
 
@@ -42,9 +43,7 @@ abstract class FoolSlide(
 
     override fun popularMangaSelector() = "div.group"
 
-    override fun popularMangaRequest(page: Int): Request {
-        return GET("$baseUrl$urlModifier/directory/$page/", headers)
-    }
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl$urlModifier/directory/$page/", headers)
 
     private val latestUpdatesUrls = mutableSetOf<String>()
 
@@ -109,12 +108,10 @@ abstract class FoolSlide(
     protected open val mangaDetailsInfoSelector = "div.info"
 
     // if there's no image on the details page, get the first page of the first chapter
-    protected fun getDetailsThumbnail(document: Document, urlSelector: String = chapterUrlSelector): String? {
-        return document.select("div.thumbnail img, table.thumb img").firstOrNull()?.attr("abs:src")
-            ?: document.select(chapterListSelector()).last()!!.select(urlSelector).attr("abs:href")
-                .let { url -> client.newCall(allowAdult(GET(url))).execute() }
-                .let { response -> pageListParse(response).first().imageUrl }
-    }
+    protected fun getDetailsThumbnail(document: Document, urlSelector: String = chapterUrlSelector): String? = document.select("div.thumbnail img, table.thumb img").firstOrNull()?.attr("abs:src")
+        ?: document.select(chapterListSelector()).last()!!.select(urlSelector).attr("abs:href")
+            .let { url -> client.newCall(allowAdult(GET(url))).execute() }
+            .let { response -> pageListParse(response).first().imageUrl }
 
     override fun mangaDetailsParse(document: Document) = SManga.create().apply {
         document.select(mangaDetailsInfoSelector).firstOrNull()?.html()?.let { infoHtml ->
@@ -167,6 +164,7 @@ abstract class FoolSlide(
                 relativeDate.set(Calendar.SECOND, 0)
                 relativeDate.set(Calendar.MILLISECOND, 0)
             }
+
             lcDate.startsWith("today") -> {
                 relativeDate = Calendar.getInstance()
                 relativeDate.set(Calendar.HOUR_OF_DAY, 0)
@@ -174,6 +172,7 @@ abstract class FoolSlide(
                 relativeDate.set(Calendar.SECOND, 0)
                 relativeDate.set(Calendar.MILLISECOND, 0)
             }
+
             lcDate.startsWith("tomorrow") -> {
                 relativeDate = Calendar.getInstance()
                 relativeDate.add(Calendar.DAY_OF_MONTH, +1) // tomorrow
@@ -248,12 +247,10 @@ abstract class FoolSlide(
         return now.timeInMillis
     }
 
-    private fun SimpleDateFormat.parseOrNull(string: String): Date? {
-        return try {
-            parse(string)
-        } catch (e: ParseException) {
-            null
-        }
+    private fun SimpleDateFormat.parseOrNull(string: String): Date? = try {
+        parse(string)
+    } catch (e: ParseException) {
+        null
     }
 
     override fun pageListRequest(chapter: SChapter) = allowAdult(super.pageListRequest(chapter))
@@ -273,9 +270,7 @@ abstract class FoolSlide(
 
     override fun imageUrlParse(document: Document) = throw UnsupportedOperationException()
 
-    protected val preferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)!!
-    }
+    protected val preferences by getPreferencesLazy()
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         CheckBoxPreference(screen.context).apply {

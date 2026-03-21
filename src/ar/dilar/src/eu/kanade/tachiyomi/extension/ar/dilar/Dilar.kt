@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.ar.dilar
 
-import android.app.Application
 import android.content.SharedPreferences
 import android.widget.Toast
 import androidx.preference.ListPreference
@@ -10,10 +9,9 @@ import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
+import keiyoushi.utils.getPreferencesLazy
 import okhttp3.Request
 import okhttp3.Response
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 
 private const val MIRROR_PREF_KEY = "MIRROR"
 private const val MIRROR_PREF_TITLE = "Dilar : Mirror Urls"
@@ -22,11 +20,12 @@ private val MIRROR_PREF_DEFAULT_VALUE = MIRROR_PREF_ENTRY_VALUES[0]
 private const val RESTART_TACHIYOMI = ".لتطبيق الإعدادات الجديدة Tachiyomi أعد تشغيل"
 
 class Dilar :
-    ConfigurableSource, Gmanga(
-    "Dilar",
-    MIRROR_PREF_DEFAULT_VALUE,
-    "ar",
-) {
+    Gmanga(
+        "Dilar",
+        MIRROR_PREF_DEFAULT_VALUE,
+        "ar",
+    ),
+    ConfigurableSource {
     override fun chaptersRequest(manga: SManga): Request {
         val mangaId = manga.url.substringAfterLast("/")
         return GET("$baseUrl/api/mangas/$mangaId/releases", headers)
@@ -65,7 +64,5 @@ class Dilar :
 
     override val cdnUrl by lazy { baseUrl }
 
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences: SharedPreferences by getPreferencesLazy()
 }

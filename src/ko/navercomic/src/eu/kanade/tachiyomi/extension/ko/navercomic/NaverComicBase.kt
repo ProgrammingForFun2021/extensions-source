@@ -29,7 +29,7 @@ abstract class NaverComicBase(protected val mType: String) : ParsedHttpSource() 
     override val baseUrl: String = "https://comic.naver.com"
     internal val mobileUrl = "https://m.comic.naver.com"
     override val supportsLatest = true
-    override val client: OkHttpClient = network.client
+    override val client: OkHttpClient = network.cloudflareClient
     internal val json: Json by injectLazy()
 
     private val mobileHeaders = super.headersBuilder()
@@ -76,13 +76,11 @@ abstract class NaverComicBase(protected val mType: String) : ParsedHttpSource() 
         return chapters
     }
 
-    private fun createChapter(chapter: MangaChapter, id: Int): SChapter {
-        return SChapter.create().apply {
-            url = "/$mType/detail?titleId=$id&no=${chapter.no}"
-            name = chapter.subtitle
-            chapter_number = chapter.no.toFloat()
-            date_upload = parseChapterDate(chapter.serviceDateDescription)
-        }
+    private fun createChapter(chapter: MangaChapter, id: Int): SChapter = SChapter.create().apply {
+        url = "/$mType/detail?titleId=$id&no=${chapter.no}"
+        name = chapter.subtitle
+        chapter_number = chapter.no.toFloat()
+        date_upload = parseChapterDate(chapter.serviceDateDescription)
     }
 
     override fun chapterFromElement(element: Element) = throw UnsupportedOperationException()
@@ -182,9 +180,7 @@ abstract class NaverComicChallengeBase(mType: String) : NaverComicBase(mType) {
     override fun latestUpdatesFromElement(element: Element) = popularMangaFromElement(element)
     override fun latestUpdatesParse(response: Response) = popularMangaParse(response)
 
-    private fun parsePageInfo(response: Response): PageInfo? {
-        return json.decodeFromString<ApiMangaChallengeResponse>(response.body.string()).pageInfo
-    }
+    private fun parsePageInfo(response: Response): PageInfo? = json.decodeFromString<ApiMangaChallengeResponse>(response.body.string()).pageInfo
 }
 
 @Serializable

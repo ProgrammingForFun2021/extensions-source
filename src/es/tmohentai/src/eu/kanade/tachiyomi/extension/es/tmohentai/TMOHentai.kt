@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.es.tmohentai
 
-import android.app.Application
 import android.content.SharedPreferences
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.asObservableSuccess
@@ -14,6 +13,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
+import keiyoushi.utils.getPreferencesLazy
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -21,10 +21,10 @@ import okhttp3.Request
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 
-class TMOHentai : ConfigurableSource, ParsedHttpSource() {
+class TMOHentai :
+    ParsedHttpSource(),
+    ConfigurableSource {
 
     override val name = "TMOHentai"
 
@@ -41,9 +41,7 @@ class TMOHentai : ConfigurableSource, ParsedHttpSource() {
     override fun headersBuilder(): Headers.Builder = super.headersBuilder()
         .set("Referer", "$baseUrl/")
 
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences: SharedPreferences by getPreferencesLazy()
 
     override fun popularMangaRequest(page: Int) = GET("$baseUrl/section/all?view=list&page=$page&order=popularity&order-dir=desc&search[searchText]=&search[searchBy]=name&type=all", headers)
 
@@ -143,23 +141,31 @@ class TMOHentai : ConfigurableSource, ParsedHttpSource() {
                 is Types -> {
                     url.addQueryParameter("type", filter.toUriPart())
                 }
+
                 is GenreList -> {
                     filter.state
                         .filter { genre -> genre.state }
                         .forEach { genre -> url.addQueryParameter("genders[]", genre.id) }
                 }
+
                 is FilterBy -> {
                     url.addQueryParameter("search[searchBy]", filter.toUriPart())
                 }
+
                 is SortBy -> {
                     if (filter.state != null) {
                         url.addQueryParameter("order", SORTABLES[filter.state!!.index].second)
                         url.addQueryParameter(
                             "order-dir",
-                            if (filter.state!!.ascending) { "asc" } else { "desc" },
+                            if (filter.state!!.ascending) {
+                                "asc"
+                            } else {
+                                "desc"
+                            },
                         )
                     }
                 }
+
                 else -> {}
             }
         }
@@ -175,24 +181,22 @@ class TMOHentai : ConfigurableSource, ParsedHttpSource() {
 
     private fun searchMangaByIdRequest(id: String) = GET("$baseUrl/$PREFIX_CONTENTS/$id", headers)
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return if (query.startsWith(PREFIX_ID_SEARCH)) {
-            val realQuery = query.removePrefix(PREFIX_ID_SEARCH)
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.startsWith(PREFIX_ID_SEARCH)) {
+        val realQuery = query.removePrefix(PREFIX_ID_SEARCH)
 
-            client.newCall(searchMangaByIdRequest(realQuery))
-                .asObservableSuccess()
-                .map { response ->
-                    val details = mangaDetailsParse(response)
-                    details.url = "/$PREFIX_CONTENTS/$realQuery"
-                    MangasPage(listOf(details), false)
-                }
-        } else {
-            client.newCall(searchMangaRequest(page, query, filters))
-                .asObservableSuccess()
-                .map { response ->
-                    searchMangaParse(response)
-                }
-        }
+        client.newCall(searchMangaByIdRequest(realQuery))
+            .asObservableSuccess()
+            .map { response ->
+                val details = mangaDetailsParse(response)
+                details.url = "/$PREFIX_CONTENTS/$realQuery"
+                MangasPage(listOf(details), false)
+            }
+    } else {
+        client.newCall(searchMangaRequest(page, query, filters))
+            .asObservableSuccess()
+            .map { response ->
+                searchMangaParse(response)
+            }
     }
 
     private class Genre(name: String, val id: String) : Filter.CheckBox(name)
@@ -208,38 +212,40 @@ class TMOHentai : ConfigurableSource, ParsedHttpSource() {
         GenreList(getGenreList()),
     )
 
-    private open class UriPartFilter(displayName: String, val vals: Array<Pair<String, String>>) :
-        Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
+    private open class UriPartFilter(displayName: String, val vals: Array<Pair<String, String>>) : Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
         fun toUriPart() = vals[state].second
     }
 
-    private class Types : UriPartFilter(
-        "Filtrar por tipo",
-        arrayOf(
-            Pair("Ver todos", "all"),
-            Pair("Manga", "hentai"),
-            Pair("Light Hentai", "light-hentai"),
-            Pair("Doujinshi", "doujinshi"),
-            Pair("One-shot", "one-shot"),
-            Pair("Other", "otro"),
-        ),
-    )
+    private class Types :
+        UriPartFilter(
+            "Filtrar por tipo",
+            arrayOf(
+                Pair("Ver todos", "all"),
+                Pair("Manga", "hentai"),
+                Pair("Light Hentai", "light-hentai"),
+                Pair("Doujinshi", "doujinshi"),
+                Pair("One-shot", "one-shot"),
+                Pair("Other", "otro"),
+            ),
+        )
 
-    private class FilterBy : UriPartFilter(
-        "Campo de orden",
-        arrayOf(
-            Pair("Nombre", "name"),
-            Pair("Artista", "artist"),
-            Pair("Revista", "magazine"),
-            Pair("Tag", "tag"),
-        ),
-    )
+    private class FilterBy :
+        UriPartFilter(
+            "Campo de orden",
+            arrayOf(
+                Pair("Nombre", "name"),
+                Pair("Artista", "artist"),
+                Pair("Revista", "magazine"),
+                Pair("Tag", "tag"),
+            ),
+        )
 
-    class SortBy : Filter.Sort(
-        "Ordenar por",
-        SORTABLES.map { it.first }.toTypedArray(),
-        Selection(2, false),
-    )
+    class SortBy :
+        Filter.Sort(
+            "Ordenar por",
+            SORTABLES.map { it.first }.toTypedArray(),
+            Selection(2, false),
+        )
 
     /**
      * Last check: 13/02/2023

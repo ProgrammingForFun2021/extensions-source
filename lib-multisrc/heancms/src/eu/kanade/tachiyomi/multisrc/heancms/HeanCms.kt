@@ -1,11 +1,9 @@
 package eu.kanade.tachiyomi.multisrc.heancms
 
-import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
-import eu.kanade.tachiyomi.lib.i18n.Intl
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.ConfigurableSource
@@ -16,6 +14,8 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.lib.i18n.Intl
+import keiyoushi.utils.getPreferencesLazy
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -26,8 +26,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlin.concurrent.thread
@@ -37,11 +35,10 @@ abstract class HeanCms(
     override val baseUrl: String,
     override val lang: String,
     protected val apiUrl: String = baseUrl.replace("://", "://api."),
-) : ConfigurableSource, HttpSource() {
+) : HttpSource(),
+    ConfigurableSource {
 
-    protected val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    protected val preferences: SharedPreferences by getPreferencesLazy()
 
     override val supportsLatest = true
 
@@ -326,8 +323,7 @@ abstract class HeanCms(
 
     override fun getChapterUrl(chapter: SChapter) = baseUrl + chapter.url.substringBeforeLast("#")
 
-    override fun pageListRequest(chapter: SChapter) =
-        GET(apiUrl + chapter.url.replace("/$mangaSubDirectory/", "/chapter/"), authHeaders())
+    override fun pageListRequest(chapter: SChapter) = GET(apiUrl + chapter.url.replace("/$mangaSubDirectory/", "/chapter/"), authHeaders())
 
     override fun pageListParse(response: Response): List<Page> {
         val result = response.parseAs<HeanCmsPagePayloadDto>()
@@ -347,9 +343,7 @@ abstract class HeanCms(
         }
     }
 
-    protected open fun String.toAbsoluteUrl(): String {
-        return if (startsWith("https://") || startsWith("http://")) this else "$cdnUrl/$coverPath$this"
-    }
+    protected open fun String.toAbsoluteUrl(): String = if (startsWith("https://") || startsWith("http://")) this else "$cdnUrl/$coverPath$this"
 
     override fun fetchImageUrl(page: Page): Observable<String> = Observable.just(page.imageUrl!!)
 
@@ -465,8 +459,7 @@ abstract class HeanCms(
 
     protected inline fun <reified T> String.parseAs(): T = json.decodeFromString(this)
 
-    protected inline fun <reified R> List<*>.firstInstanceOrNull(): R? =
-        filterIsInstance<R>().firstOrNull()
+    protected inline fun <reified R> List<*>.firstInstanceOrNull(): R? = filterIsInstance<R>().firstOrNull()
 
     private val SharedPreferences.showPaidChapters: Boolean
         get() = getBoolean(SHOW_PAID_CHAPTERS_PREF, SHOW_PAID_CHAPTERS_DEFAULT)

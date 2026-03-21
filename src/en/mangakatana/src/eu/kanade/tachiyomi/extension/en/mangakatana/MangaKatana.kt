@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.en.mangakatana
 
-import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
@@ -14,20 +13,21 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferencesLazy
 import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.ResponseBody.Companion.asResponseBody
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class MangaKatana : ConfigurableSource, ParsedHttpSource() {
+class MangaKatana :
+    ParsedHttpSource(),
+    ConfigurableSource {
     override val name = "MangaKatana"
 
     override val baseUrl = "https://mangakatana.com"
@@ -36,17 +36,15 @@ class MangaKatana : ConfigurableSource, ParsedHttpSource() {
 
     override val supportsLatest = true
 
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences: SharedPreferences by getPreferencesLazy()
     private val serverPreference = "SERVER_PREFERENCE"
 
     override val client: OkHttpClient = network.cloudflareClient.newBuilder().addNetworkInterceptor { chain ->
         val originalResponse = chain.proceed(chain.request())
         if (originalResponse.headers("Content-Type").contains("application/octet-stream")) {
-            val orgBody = originalResponse.body.bytes()
+            val orgBody = originalResponse.body.source()
             val extension = chain.request().url.toString().substringAfterLast(".")
-            val newBody = orgBody.toResponseBody("image/$extension".toMediaTypeOrNull())
+            val newBody = orgBody.asResponseBody("image/$extension".toMediaType())
             originalResponse.newBuilder()
                 .body(newBody)
                 .build()
@@ -108,13 +106,17 @@ class MangaKatana : ConfigurableSource, ParsedHttpSource() {
                         if (includedGenres.isNotEmpty()) url.addQueryParameter("include", includedGenres.joinToString("_"))
                         if (excludedGenres.isNotEmpty()) url.addQueryParameter("exclude", excludedGenres.joinToString("_"))
                     }
+
                     is GenreInclusionMode -> url.addQueryParameter("include_mode", filter.toUriPart())
+
                     is SortFilter -> url.addQueryParameter("order", filter.toUriPart())
+
                     is StatusFilter -> {
                         if (filter.toUriPart().isNotEmpty()) {
                             url.addQueryParameter("status", filter.toUriPart())
                         }
                     }
+
                     is ChaptersFilter -> {
                         when (filter.state.trim()) {
                             "-1" -> url.addQueryParameter("chapters", "e1")
@@ -122,6 +124,7 @@ class MangaKatana : ConfigurableSource, ParsedHttpSource() {
                             else -> url.addQueryParameter("chapters", filter.state.trim())
                         }
                     }
+
                     else -> {}
                 }
             }
@@ -242,13 +245,14 @@ class MangaKatana : ConfigurableSource, ParsedHttpSource() {
         ChaptersFilter(),
     )
 
-    private class TypeFilter : UriPartFilter(
-        "Text search by",
-        arrayOf(
-            Pair("Title", "book_name"),
-            Pair("Author", "author"),
-        ),
-    )
+    private class TypeFilter :
+        UriPartFilter(
+            "Text search by",
+            arrayOf(
+                Pair("Title", "book_name"),
+                Pair("Author", "author"),
+            ),
+        )
 
     private class Genre(val id: String, name: String) : Filter.TriState(name)
     private class GenreList(genres: List<Genre>) : Filter.Group<Genre>("Genres", genres)
@@ -307,38 +311,40 @@ class MangaKatana : ConfigurableSource, ParsedHttpSource() {
         Genre("yuri", "Yuri"),
     )
 
-    private class GenreInclusionMode : UriPartFilter(
-        "Genre inclusion mode",
-        arrayOf(
-            Pair("And", "and"),
-            Pair("Or", "or"),
-        ),
-    )
+    private class GenreInclusionMode :
+        UriPartFilter(
+            "Genre inclusion mode",
+            arrayOf(
+                Pair("And", "and"),
+                Pair("Or", "or"),
+            ),
+        )
 
     private class ChaptersFilter : Filter.Text("Minimum Chapters")
 
-    private class SortFilter : UriPartFilter(
-        "Sort by",
-        arrayOf(
-            Pair("Latest update", "latest"),
-            Pair("New manga", "new"),
-            Pair("A-Z", "az"),
-            Pair("Number of chapters", "numc"),
-        ),
-    )
+    private class SortFilter :
+        UriPartFilter(
+            "Sort by",
+            arrayOf(
+                Pair("Latest update", "latest"),
+                Pair("New manga", "new"),
+                Pair("A-Z", "az"),
+                Pair("Number of chapters", "numc"),
+            ),
+        )
 
-    private class StatusFilter : UriPartFilter(
-        "Status",
-        arrayOf(
-            Pair("All", ""),
-            Pair("Cancelled", "0"),
-            Pair("Ongoing", "1"),
-            Pair("Completed", "2"),
-        ),
-    )
+    private class StatusFilter :
+        UriPartFilter(
+            "Status",
+            arrayOf(
+                Pair("All", ""),
+                Pair("Cancelled", "0"),
+                Pair("Ongoing", "1"),
+                Pair("Completed", "2"),
+            ),
+        )
 
-    private open class UriPartFilter(displayName: String, val vals: Array<Pair<String, String>>) :
-        Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
+    private open class UriPartFilter(displayName: String, val vals: Array<Pair<String, String>>) : Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray()) {
         fun toUriPart() = vals[state].second
     }
 

@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.extension.zh.boylove
 
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
+import keiyoushi.utils.tryParse
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.long
@@ -45,21 +46,22 @@ class MangaDto(
     }
 }
 
-fun String.toImageUrl() =
-    if (startsWith("http")) {
-        this
-    } else {
-        "https://blcnimghost2.cc$this"
-    }
+fun String.toImageUrl() = if (startsWith("http")) {
+    this
+} else {
+    "https://blcnimghost2.cc$this"
+}
 
 @Serializable
 class ChapterDto(
     private val id: Int,
     private val title: String,
+    private val create_time: String,
 ) {
     fun toSChapter() = SChapter.create().apply {
         url = "/home/book/capter/id/$id"
         name = title.trim()
+        date_upload = dateFormat.tryParse(create_time)
     }
 }
 

@@ -170,7 +170,7 @@ class Hachi : HttpSource() {
 
     // Details
     override fun mangaDetailsRequest(manga: SManga): Request {
-        val slug = patternMangaUrl.find(manga.url)?.groups?.get("slug")?.value
+        val slug = patternMangaUrl.find(manga.url)?.groups?.get(1)?.value
             ?: throw Exception("Failed to find manga from URL")
 
         val url = "$baseUrl/_next/data/$buildId/article/$slug.json".toHttpUrl().newBuilder()
@@ -180,9 +180,7 @@ class Hachi : HttpSource() {
         return GET(url, headers)
     }
 
-    override fun getMangaUrl(manga: SManga): String {
-        return super.mangaDetailsRequest(manga).url.toString()
-    }
+    override fun getMangaUrl(manga: SManga): String = super.mangaDetailsRequest(manga).url.toString()
 
     override fun mangaDetailsParse(response: Response): SManga {
         val dto = response.parseAs<DetailsResponseDto>()
@@ -201,9 +199,7 @@ class Hachi : HttpSource() {
     }
 
     // Chapters
-    override fun chapterListRequest(manga: SManga): Request {
-        return mangaDetailsRequest(manga)
-    }
+    override fun chapterListRequest(manga: SManga): Request = mangaDetailsRequest(manga)
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val dto = response.parseAs<DetailsResponseDto>()
@@ -226,8 +222,8 @@ class Hachi : HttpSource() {
     // Pages
     override fun pageListRequest(chapter: SChapter): Request {
         val matchGroups = patternMangaUrl.find(chapter.url)!!.groups
-        val slug = matchGroups["slug"]!!.value
-        val number = matchGroups["number"]!!.value
+        val slug = matchGroups[1]!!.value
+        val number = matchGroups[2]!!.value
 
         val url = "$baseUrl/_next/data/$buildId/article/$slug/chapter/$number.json".toHttpUrl()
             .newBuilder()
@@ -238,9 +234,7 @@ class Hachi : HttpSource() {
         return GET(url, headers)
     }
 
-    override fun getChapterUrl(chapter: SChapter): String {
-        return super.pageListRequest(chapter).url.toString()
-    }
+    override fun getChapterUrl(chapter: SChapter): String = super.pageListRequest(chapter).url.toString()
 
     override fun pageListParse(response: Response): List<Page> {
         val dto = response.parseAs<ChapterResponseDto>()
@@ -253,8 +247,7 @@ class Hachi : HttpSource() {
     override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
     // Other
-    private inline fun <reified T> Response.parseAs(): T =
-        json.decodeFromString(body.string())
+    private inline fun <reified T> Response.parseAs(): T = json.decodeFromString(body.string())
 
     private fun String.parseStatus() = when (this.lowercase()) {
         "ongoing" -> SManga.ONGOING
@@ -289,7 +282,7 @@ class Hachi : HttpSource() {
             }
 
         private val patternMangaUrl =
-            """/article/(?<slug>[^/]+)(?:/chapter/(?<number>[^/?&#]+))?""".toRegex()
+            """/article/([^/]+)(?:/chapter/([^/?&#]+))?""".toRegex()
         const val SEARCH_PREFIX = "slug:"
     }
 }

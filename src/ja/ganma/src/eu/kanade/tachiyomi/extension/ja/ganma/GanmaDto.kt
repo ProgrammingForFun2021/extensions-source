@@ -1,168 +1,285 @@
 package eu.kanade.tachiyomi.extension.ja.ganma
 
-import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import java.text.DateFormat.getDateTimeInstance
-import java.util.Date
 
 @Serializable
-class Result<T>(val root: T)
+class GraphQLResponse<T>(
+    val data: T,
+)
 
-// Manga
+@Suppress("unused")
 @Serializable
-class Magazine(
-    val id: String,
-    val alias: String? = null,
-    val title: String,
-    val description: String? = null,
-    val squareImage: File? = null,
-//  val squareWithLogoImage: File? = null,
-    val author: Author? = null,
-    val newestStoryItem: Story? = null,
-    val flags: Flags? = null,
-    val announcement: Announcement? = null,
-    val items: List<Story> = emptyList(),
+class Payload<T>(
+    val operationName: String,
+    val variables: T,
+    val extensions: Extensions,
+) {
+    @Serializable
+    class Extensions(
+        val persistedQuery: PersistedQuery,
+    ) {
+        @Serializable
+        class PersistedQuery(
+            val version: Int,
+            val sha256Hash: String,
+        )
+    }
+}
+
+// Variables
+@Serializable
+object EmptyVariables
+
+@Suppress("unused")
+@Serializable
+class SearchVariables(
+    val keyword: String,
+    val after: String?,
+)
+
+@Suppress("unused")
+@Serializable
+class DayOfWeekVariables(
+    val dayOfWeek: String,
+    val after: String?,
+)
+
+@Suppress("unused")
+@Serializable
+class FinishedVariables(
+    val after: String?,
+)
+
+@Suppress("unused")
+@Serializable
+class MagazineDetailVariables(
+    val magazineIdOrAlias: String,
+)
+
+@Suppress("unused")
+@Serializable
+class ChapterListVariables(
+    val magazineIdOrAlias: String,
+    val first: Int,
+    val after: String?,
+)
+
+@Suppress("unused")
+@Serializable
+class ViewerVariables(
+    val magazineIdOrAlias: String,
+    val storyId: String,
+)
+
+// Cursor
+@Serializable
+class PageInfo(
+    val hasNextPage: Boolean,
+    val endCursor: String?,
+)
+
+// Popular
+@Serializable
+class HomeDto(
+    val ranking: RankingDto,
+)
+
+@Serializable
+class RankingDto(
+    val totalRanking: List<MangaItemDto>,
+)
+
+// Latest
+@Serializable
+class LatestResponse(
+    val serialPerDayOfWeek: SerialPanel,
+)
+
+@Serializable
+class SerialPanel(
+    val panels: SerialConnection,
+)
+
+@Serializable
+class SerialConnection(
+    val edges: List<SerialEdge>,
+    val pageInfo: PageInfo,
+)
+
+@Serializable
+class SerialEdge(
+    val node: SerialNode,
+)
+
+@Serializable
+class SerialNode(
+    val storyInfo: StoryInfoRef,
+)
+
+@Serializable
+class StoryInfoRef(
+    val magazine: MangaItemDto,
+)
+
+@Serializable
+class FinishedResponseDto(
+    val magazinesByCategory: FinishedCategoryDto,
+)
+
+@Serializable
+class FinishedCategoryDto(
+    val magazines: SearchConnection,
+)
+
+// Search
+@Serializable
+class SearchResponse(
+    val searchComic: SearchConnection,
+)
+
+@Serializable
+class SearchConnection(
+    val edges: List<SearchEdge>,
+    val pageInfo: PageInfo,
+)
+
+@Serializable
+class SearchEdge(
+    val node: MangaItemDto,
+)
+
+@Serializable
+class MangaItemDto(
+    private val alias: String,
+    private val title: String,
+    @SerialName("todaysJacketImageURL") private val todaysJacketImageUrl: String?,
+    @SerialName("rectangleWithLogoImageURL") private val rectangleWithLogoImageUrl: String?,
 ) {
     fun toSManga() = SManga.create().apply {
-        url = "${alias!!}#$id"
-        title = this@Magazine.title
-        thumbnail_url = squareImage!!.url
-    }
-
-    fun toSMangaDetails() = toSManga().apply {
-        author = this@Magazine.author?.penName
-        val flagsText = flags?.toText()
-        description = generateDescription(flagsText)
-        status = when {
-            flags?.isFinish == true -> SManga.COMPLETED
-            !flagsText.isNullOrEmpty() -> SManga.ONGOING
-            else -> SManga.UNKNOWN
-        }
-        initialized = true
-    }
-
-    private fun generateDescription(flagsText: String?): String {
-        val result = mutableListOf<String>()
-        if (!flagsText.isNullOrEmpty()) result.add("Updates: $flagsText")
-        if (announcement != null) result.add("Announcement: ${announcement.text}")
-        if (description != null) result.add(description)
-        return result.joinToString("\n\n")
-    }
-
-    fun getSChapterList(): List<SChapter> {
-        val now = System.currentTimeMillis()
-        return items.map {
-            SChapter.create().apply {
-                url = "${alias!!}#$id/${it.id ?: it.storyId}"
-                name = buildString {
-                    if (it.kind != "free") append("🔒 ")
-                    append(it.title)
-                    if (it.subtitle != null) append(' ').append(it.subtitle)
-                }
-                val time = it.releaseStart ?: -1
-                date_upload = time
-                if (time > now) scanlator = getDateTimeInstance().format(Date(time)) + '~'
-            }
-        }
+        url = alias
+        title = this@MangaItemDto.title
+        thumbnail_url = todaysJacketImageUrl ?: rectangleWithLogoImageUrl
     }
 }
 
-fun String.alias() = this.substringBefore('#')
-fun String.mangaId() = this.substringAfter('#')
-fun String.chapterDir(): Pair<String, String> =
-    with(this.substringAfter('#')) {
-        // this == [mangaId-UUID]/[chapterId-UUID]
-        Pair(substring(0, 36), substring(37, 37 + 36))
-    }
-
-// Chapter
+// Details
 @Serializable
-class Story(
-    val id: String? = null,
-    val storyId: String? = null,
-    val title: String,
-    val subtitle: String? = null,
-    val release: Long = 0,
-    val releaseStart: Long? = null,
-    val page: Directory? = null,
-    val afterwordImage: File? = null,
-    val kind: String? = null,
+class DetailsResponse(
+    val magazine: Details,
+)
+
+@Serializable
+class Details(
+    val alias: String,
+    private val title: String,
+    private val authorName: String?,
+    private val description: String?,
+    private val isFinished: Boolean?,
+    @SerialName("squareWithLogoImageURL") private val squareWithLogoImageUrl: String?,
+    private val rectangleWithLogoImageURL: String?,
+    private val magazineTags: List<Tags>?,
+    val isWebOnlySensitive: Boolean?,
 ) {
-    fun toPageList(): List<Page> {
-        val result = page!!.toPageList()
-        if (afterwordImage != null) {
-            result.add(Page(result.size, imageUrl = afterwordImage.url))
-        }
-        return result
+    fun toSManga() = SManga.create().apply {
+        title = this@Details.title
+        author = authorName
+        description = this@Details.description
+        genre = magazineTags?.joinToString { it.name }
+        status = if (isFinished == true) SManga.COMPLETED else SManga.ONGOING
+        thumbnail_url = squareWithLogoImageUrl ?: rectangleWithLogoImageURL
     }
 }
 
 @Serializable
-class File(val url: String)
+class Tags(
+    val name: String,
+)
+
+// Chapters
+@Serializable
+class ChapterResponse(
+    val magazine: ChapterInfos,
+)
 
 @Serializable
-class Author(val penName: String? = null)
+class ChapterInfos(
+    val storyInfos: ChapterEdge,
+)
 
 @Serializable
-class Top(val boxes: List<Box>)
+class ChapterEdge(
+    val edges: List<StoryInfoEdge>,
+)
 
 @Serializable
-class Box(val panels: List<Magazine>)
+class StoryInfoEdge(
+    val node: Chapters,
+)
 
 @Serializable
-class Flags(
-    val isMonday: Boolean = false,
-    val isTuesday: Boolean = false,
-    val isWednesday: Boolean = false,
-    val isThursday: Boolean = false,
-    val isFriday: Boolean = false,
-    val isSaturday: Boolean = false,
-    val isSunday: Boolean = false,
-
-    val isWeekly: Boolean = false,
-    val isEveryOtherWeek: Boolean = false,
-    val isThreeConsecutiveWeeks: Boolean = false,
-    val isMonthly: Boolean = false,
-
-    val isFinish: Boolean = false,
-//  val isMGAward: Boolean = false,
-//  val isNew: Boolean = false,
+class Chapters(
+    private val storyId: String,
+    private val title: String,
+    private val subtitle: String?,
+    private val contentsRelease: Long,
+    private val isPurchased: Boolean?,
+    private val contentsAccessCondition: ContentsAccessCondition?,
 ) {
-    fun toText(): String {
-        val result = mutableListOf<String>()
-        val days = mutableListOf<String>()
-        arrayOf(isWeekly, isEveryOtherWeek, isThreeConsecutiveWeeks, isMonthly)
-            .forEachIndexed { i, value -> if (value) result.add(weekText[i]) }
-        arrayOf(isMonday, isTuesday, isWednesday, isThursday, isFriday, isSaturday, isSunday)
-            .forEachIndexed { i, value -> if (value) days.add(dayText[i] + "s") }
-        if (days.size == 7) {
-            result.add("every day")
-        } else if (days.size != 0) {
-            days[0] = "on " + days[0]
-            result += days
-        }
-        return result.joinToString(", ")
-    }
+    val isLocked: Boolean
+        get() = isPurchased == false && (
+            (contentsAccessCondition?.typename != "FreeStoryContentsAccessCondition") ||
+                (contentsAccessCondition.info?.coins != null && contentsAccessCondition.info.coins != 0)
+            )
 
-    companion object {
-        private val weekText = arrayOf("every week", "every other week", "three weeks in a row", "every month")
-        private val dayText = arrayOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+    fun toSChapter(slug: String) = SChapter.create().apply {
+        val lock = if (isLocked) "\uD83E\uDE99 " else ""
+        val chapterName = if (!subtitle.isNullOrEmpty()) "$title $subtitle" else title
+        url = "$slug/$storyId"
+        name = lock + chapterName
+        date_upload = contentsRelease
     }
 }
 
 @Serializable
-class Announcement(val text: String)
+class ContentsAccessCondition(
+    @SerialName("__typename") val typename: String,
+    val info: PurchaseInfo?,
+)
 
 @Serializable
-class Directory(
-    val baseUrl: String,
-    val token: String,
-    val files: List<String>,
-) {
-    fun toPageList(): MutableList<Page> =
-        files.mapIndexedTo(ArrayList(files.size + 1)) { i, file ->
-            Page(i, imageUrl = "$baseUrl$file?$token")
-        }
-}
+class PurchaseInfo(
+    val coins: Int?,
+)
+
+// Viewer
+@Serializable
+class ViewerResponse(
+    val magazine: ViewerContent,
+)
+
+@Serializable
+class ViewerContent(
+    val storyContents: ViewerInfo,
+)
+
+@Serializable
+class ViewerInfo(
+    val pageImages: ViewerImages?,
+    val error: String?,
+    val afterword: Afterword?,
+)
+
+@Serializable
+class ViewerImages(
+    val pageCount: Int,
+    @SerialName("pageImageBaseURL") val pageImageBaseUrl: String,
+    val pageImageSign: String,
+)
+
+@Serializable
+class Afterword(
+    @SerialName("imageURL") val imageUrl: String?,
+)

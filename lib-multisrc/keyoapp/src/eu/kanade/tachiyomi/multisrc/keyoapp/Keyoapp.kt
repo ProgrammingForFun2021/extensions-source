@@ -1,10 +1,8 @@
 package eu.kanade.tachiyomi.multisrc.keyoapp
 
-import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
-import eu.kanade.tachiyomi.lib.i18n.Intl
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
@@ -15,6 +13,8 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.i18n.Intl
+import keiyoushi.utils.getPreferencesLazy
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -23,8 +23,6 @@ import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
 import java.text.ParseException
 import java.text.SimpleDateFormat
@@ -35,11 +33,10 @@ abstract class Keyoapp(
     override val name: String,
     override val baseUrl: String,
     final override val lang: String,
-) : ParsedHttpSource(), ConfigurableSource {
+) : ParsedHttpSource(),
+    ConfigurableSource {
 
-    protected val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    protected val preferences: SharedPreferences by getPreferencesLazy()
 
     override val supportsLatest = true
 
@@ -63,7 +60,16 @@ abstract class Keyoapp(
 
     override fun popularMangaRequest(page: Int): Request = GET(baseUrl, headers)
 
-    override fun popularMangaSelector(): String = "div.flex-col div.grid > div.group.border"
+    open val popularMangaTitleSelector = listOf(
+        "Popular",
+        "Popularie",
+        "Trending",
+    )
+
+    override fun popularMangaSelector(): String = selector(
+        "div:contains(%s) + div .group.overflow-hidden.grid",
+        popularMangaTitleSelector,
+    )
 
     override fun popularMangaFromElement(element: Element): SManga = SManga.create().apply {
         thumbnail_url = element.getImageUrl("*[style*=background-image]")
@@ -163,16 +169,14 @@ abstract class Keyoapp(
 
     protected class GenreList(title: String, genres: List<Genre>) : Filter.Group<Genre>(title, genres)
 
-    override fun getFilterList(): FilterList {
-        return if (genresList.isNotEmpty()) {
-            FilterList(
-                GenreList("Genres", genresList),
-            )
-        } else {
-            FilterList(
-                Filter.Header("Press 'Reset' to attempt to show the genres"),
-            )
-        }
+    override fun getFilterList(): FilterList = if (genresList.isNotEmpty()) {
+        FilterList(
+            GenreList("Genres", genresList),
+        )
+    } else {
+        FilterList(
+            Filter.Header("Press 'Reset' to attempt to show the genres"),
+        )
     }
 
     /**
@@ -191,40 +195,46 @@ abstract class Keyoapp(
         }
     }
 
-    private fun genresRequest(): Request = GET("$baseUrl/series/", headers)
+    protected open fun genresRequest(): Request = GET("$baseUrl/series/", headers)
 
     /**
      * Get the genres from the search page document.
      *
      * @param document The search page document
      */
-    protected open fun parseGenres(document: Document): List<Genre> {
-        return document.select("#series_tags_page > button")
-            .map { btn ->
-                Genre(btn.text(), btn.attr("tag"))
-            }
-    }
+    protected open fun parseGenres(document: Document): List<Genre> = document.select("#series_tags_page > button")
+        .map { btn ->
+            Genre(btn.text(), btn.attr("tag"))
+        }
 
     // Details
+    protected open val descriptionSelector: String = "div:containsOwn(Synopsis) ~ div"
+    protected open val statusSelector: String = "div:has(span:containsOwn(Status)) ~ div"
+    protected open val authorSelector: String = "div:has(span:containsOwn(Author)) ~ div"
+    protected open val artistSelector: String = "div:has(span:containsOwn(Artist)) ~ div"
+    protected open val genreSelector: String = "div.grid:has(>h1) > div > a:not([title='Status'])"
+
+    protected open val typeSelector: String = "div:has(span:containsOwn(Type)) ~ div"
+    protected open val dateSelector: String = ".text-xs"
 
     override fun mangaDetailsParse(document: Document): SManga = SManga.create().apply {
         title = document.selectFirst("div.grid > h1")!!.text()
         thumbnail_url = document.getImageUrl("div[class*=photoURL]")
-        description = document.selectFirst("div.grid > div.overflow-hidden > p")?.text()
-        status = document.selectFirst("div[alt=Status]").parseStatus()
-        author = document.selectFirst("div[alt=Author]")?.text()
-        artist = document.selectFirst("div[alt=Artist]")?.text()
+        description = document.selectFirst(descriptionSelector)?.text()
+        status = document.selectFirst(statusSelector).parseStatus()
+        author = document.selectFirst(authorSelector)?.text()
+        artist = document.selectFirst(artistSelector)?.text()
         genre = buildList {
-            document.selectFirst("div[alt='Series Type']")?.text()?.replaceFirstChar {
+            document.selectFirst(typeSelector)?.text()?.replaceFirstChar {
                 if (it.isLowerCase()) {
                     it.titlecase(
-                        Locale.getDefault(),
+                        Locale.ENGLISH,
                     )
                 } else {
                     it.toString()
                 }
             }.let(::add)
-            document.select("div.grid:has(>h1) > div > a").forEach { add(it.text()) }
+            document.select(genreSelector).forEach { add(it.text()) }
         }.joinToString()
     }
 
@@ -240,7 +250,7 @@ abstract class Keyoapp(
 
     override fun chapterListSelector(): String {
         if (!preferences.showPaidChapters) {
-            return "#chapters > a:not(:has(.text-sm span:matches(Upcoming))):not(:has(img[src*=Coin.svg]))"
+            return "#chapters > a:not(:has(.text-sm span:matches(Upcoming))):not(:has(img[alt~=Coin]))"
         }
         return "#chapters > a:not(:has(.text-sm span:matches(Upcoming)))"
     }
@@ -248,7 +258,7 @@ abstract class Keyoapp(
     override fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
         setUrlWithoutDomain(element.selectFirst("a[href]")!!.attr("href"))
         name = element.selectFirst(".text-sm")!!.text()
-        element.selectFirst(".text-xs")?.run {
+        element.selectFirst(dateSelector)?.run {
             date_upload = text().trim().parseDate()
         }
         if (element.select("img[src*=Coin.svg]").isNotEmpty()) {
@@ -279,16 +289,14 @@ abstract class Keyoapp(
             }
     }
 
-    protected open fun getCdnUrl(document: Document): String? {
-        return document.select("script")
-            .firstOrNull { CDN_HOST_REGEX.containsMatchIn(it.html()) }
-            ?.let {
-                val cdnHost = CDN_HOST_REGEX.find(it.html())
-                    ?.groups?.get("host")?.value
-                    ?.replace(CDN_CLEAN_REGEX, "")
-                "https://$cdnHost/uploads"
-            }
-    }
+    protected open fun getCdnUrl(document: Document): String? = document.select("script")
+        .firstOrNull { CDN_HOST_REGEX.containsMatchIn(it.html()) }
+        ?.let {
+            val cdnHost = CDN_HOST_REGEX.find(it.html())
+                ?.groups?.get(1)?.value
+                ?.replace(CDN_CLEAN_REGEX, "")
+            "https://$cdnHost/uploads"
+        }
 
     private val oldImgCdnRegex = Regex("""^(https?:)?//cdn\d*\.keyoapp\.com""")
 
@@ -306,34 +314,28 @@ abstract class Keyoapp(
         return url
     }
 
-    protected open fun Element.getImageUrl(selector: String): String? {
-        return this.selectFirst(selector)?.let { element ->
-            IMG_REGEX.find(element.attr("style"))?.groups?.get("url")?.value
-                ?.toHttpUrlOrNull()?.let {
-                    it.newBuilder()
-                        .setQueryParameter("w", "480") // Keyoapp returns the dynamic size of the thumbnail to any size
-                        .build()
-                        .toString()
-                }
-        }
+    protected open fun Element.getImageUrl(selector: String): String? = this.selectFirst(selector)?.let { element ->
+        IMG_REGEX.find(element.attr("style"))?.groups?.get(1)?.value
+            ?.toHttpUrlOrNull()?.let {
+                it.newBuilder()
+                    .setQueryParameter("w", "480") // Keyoapp returns the dynamic size of the thumbnail to any size
+                    .build()
+                    .toString()
+            }
     }
 
-    private fun String.parseDate(): Long {
-        return if (this.contains("ago")) {
-            this.parseRelativeDate()
-        } else {
-            try {
-                dateFormat.parse(this)!!.time
-            } catch (_: ParseException) {
-                0L
-            }
+    private fun String.parseDate(): Long = if (this.contains("ago")) {
+        this.parseRelativeDate()
+    } else {
+        try {
+            dateFormat.parse(this)!!.time
+        } catch (_: ParseException) {
+            0L
         }
     }
 
     private fun String.parseRelativeDate(): Long {
         val now = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
             set(Calendar.SECOND, 0)
             set(Calendar.MILLISECOND, 0)
         }
@@ -345,16 +347,30 @@ abstract class Keyoapp(
             ?: return 0L
 
         when {
-            "second" in this -> now.add(Calendar.SECOND, -relativeDate) // parse: 30 seconds ago
-            "minute" in this -> now.add(Calendar.MINUTE, -relativeDate) // parses: "42 minutes ago"
-            "hour" in this -> now.add(Calendar.HOUR, -relativeDate) // parses: "1 hour ago" and "2 hours ago"
-            "day" in this -> now.add(Calendar.DAY_OF_YEAR, -relativeDate) // parses: "2 days ago"
-            "week" in this -> now.add(Calendar.WEEK_OF_YEAR, -relativeDate) // parses: "2 weeks ago"
-            "month" in this -> now.add(Calendar.MONTH, -relativeDate) // parses: "2 months ago"
+            "second" in this -> now.add(Calendar.SECOND, -relativeDate)
+
+            // parse: 30 seconds ago
+            "minute" in this -> now.add(Calendar.MINUTE, -relativeDate)
+
+            // parses: "42 minutes ago"
+            "hour" in this -> now.add(Calendar.HOUR, -relativeDate)
+
+            // parses: "1 hour ago" and "2 hours ago"
+            "day" in this -> now.add(Calendar.DAY_OF_YEAR, -relativeDate)
+
+            // parses: "2 days ago"
+            "week" in this -> now.add(Calendar.WEEK_OF_YEAR, -relativeDate)
+
+            // parses: "2 weeks ago"
+            "month" in this -> now.add(Calendar.MONTH, -relativeDate)
+
+            // parses: "2 months ago"
             "year" in this -> now.add(Calendar.YEAR, -relativeDate) // parse: "2 years ago"
         }
         return now.timeInMillis
     }
+
+    private fun selector(selector: String, contains: List<String>): String = contains.joinToString { selector.replace("%s", it) }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         SwitchPreferenceCompat(screen.context).apply {
@@ -372,8 +388,8 @@ abstract class Keyoapp(
     companion object {
         private const val SHOW_PAID_CHAPTERS_PREF = "pref_show_paid_chap"
         private const val SHOW_PAID_CHAPTERS_DEFAULT = false
-        val CDN_HOST_REGEX = """realUrl\s*=\s*`[^`]+//(?<host>[^/]+)""".toRegex()
+        val CDN_HOST_REGEX = """realUrl\s*=\s*`[^`]+//([^/]+)""".toRegex()
         val CDN_CLEAN_REGEX = """\$\{[^}]*\}""".toRegex()
-        val IMG_REGEX = """url\(['"]?(?<url>[^(['"\)])]+)""".toRegex()
+        val IMG_REGEX = """url\(['"]?([^(['"\)])]+)""".toRegex()
     }
 }

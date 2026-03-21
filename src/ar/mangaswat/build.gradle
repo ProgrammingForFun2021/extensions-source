@@ -1,9 +1,9 @@
 ext {
     extName = 'MangaSwat'
     extClass = '.MangaSwat'
-    themePkg = 'mangathemesia'
-    baseUrl = 'https://swatscans.com'
-    overrideVersionCode = 25
+    baseUrl = 'https://appswat.com'
+    extVersionCode = 59
+    isNsfw = false
 }
 
 apply from: "$rootDir/common.gradle"

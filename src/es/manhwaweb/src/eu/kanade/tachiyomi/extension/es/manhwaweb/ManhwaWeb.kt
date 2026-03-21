@@ -9,7 +9,6 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -37,7 +36,6 @@ class ManhwaWeb : HttpSource() {
         .build()
 
     override fun headersBuilder(): Headers.Builder = super.headersBuilder()
-        .add("Referer", "$baseUrl/")
         .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/png,image/svg+xml,*/*;q=0.8")
 
     override fun popularMangaRequest(page: Int): Request = GET("$apiUrl/manhwa/nuevos", headers)
@@ -71,9 +69,13 @@ class ManhwaWeb : HttpSource() {
         filters.forEach { filter ->
             when (filter) {
                 is TypeFilter -> url.addQueryParameter("tipo", filter.toUriPart())
+
                 is DemographyFilter -> url.addQueryParameter("demografia", filter.toUriPart())
+
                 is StatusFilter -> url.addQueryParameter("estado", filter.toUriPart())
+
                 is EroticFilter -> url.addQueryParameter("erotico", filter.toUriPart())
+
                 is GenreFilter -> {
                     val genres = filter.state
                         .filter { it.state }
@@ -98,18 +100,16 @@ class ManhwaWeb : HttpSource() {
         return GET(url.build(), headers)
     }
 
-    override fun getFilterList(): FilterList {
-        return FilterList(
-            TypeFilter(),
-            DemographyFilter(),
-            StatusFilter(),
-            EroticFilter(),
-            Filter.Separator(),
-            GenreFilter("Géneros", getGenres()),
-            Filter.Separator(),
-            SortByFilter("Ordenar por", getSortProperties()),
-        )
-    }
+    override fun getFilterList(): FilterList = FilterList(
+        TypeFilter(),
+        DemographyFilter(),
+        StatusFilter(),
+        EroticFilter(),
+        Filter.Separator(),
+        GenreFilter("Géneros", getGenres()),
+        Filter.Separator(),
+        SortByFilter("Ordenar por", getSortProperties()),
+    )
 
     override fun searchMangaParse(response: Response): MangasPage {
         val result = json.decodeFromString<PayloadSearchDto>(response.body.string())
@@ -124,8 +124,7 @@ class ManhwaWeb : HttpSource() {
         return GET("$apiUrl/manhwa/see/$slug", headers)
     }
 
-    override fun mangaDetailsParse(response: Response): SManga =
-        json.decodeFromString<ComicDetailsDto>(response.body.string()).toSManga()
+    override fun mangaDetailsParse(response: Response): SManga = json.decodeFromString<ComicDetailsDto>(response.body.string()).toSManga()
 
     override fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url
 
@@ -133,16 +132,19 @@ class ManhwaWeb : HttpSource() {
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val result = json.decodeFromString<PayloadChapterDto>(response.body.string())
-        val chapters = result.chapters.filterNot { it.espUrl == null && it.rawUrl == null }.map { it.toSChapter() }
+        val chapters = result.chapters.filterNot {
+            it.createdAt == null || (it.espUrl == null && it.rawUrl == null)
+        }.map { it.toSChapter(result.id, result.realId) }
 
         return chapters.sortedByDescending { it.chapter_number }
     }
 
-    private fun ChapterDto.toSChapter() = SChapter.create().apply {
+    private fun ChapterDto.toSChapter(id: String, realId: String) = SChapter.create().apply {
         name = "Capítulo ${number.toString().removeSuffix(".0")}"
         chapter_number = number
         date_upload = createdAt ?: 0
-        url = espUrl ?: rawUrl!!
+        val url = (espUrl ?: rawUrl!!).replace(id, realId)
+        setUrlWithoutDomain(url)
         scanlator = if (espUrl != null) "Esp" else "Raw"
     }
 
@@ -153,7 +155,7 @@ class ManhwaWeb : HttpSource() {
 
     override fun pageListParse(response: Response): List<Page> {
         val result = json.decodeFromString<PayloadPageDto>(response.body.string())
-        return result.data.images.filter { it.isNotBlank() }
+        return result.data.images.filter { it.startsWith("http") }
             .mapIndexed { i, img -> Page(i, imageUrl = img) }
     }
 

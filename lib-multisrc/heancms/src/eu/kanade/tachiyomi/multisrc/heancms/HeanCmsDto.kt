@@ -105,7 +105,7 @@ class HeanCmsChapterDto(
     @SerialName("chapter_name") private val name: String,
     @SerialName("chapter_title") private val title: String? = null,
     @SerialName("chapter_slug") private val slug: String,
-    @SerialName("created_at") private val createdAt: String,
+    @SerialName("created_at") private val createdAt: String? = null,
     val price: Int? = null,
 ) {
     fun toSChapter(
@@ -166,9 +166,7 @@ class HeanCmsGenreDto(
     val name: String,
 )
 
-private fun String.toAbsoluteThumbnailUrl(cdnUrl: String, coverPath: String): String {
-    return if (startsWith("https://") || startsWith("http://")) this else "$cdnUrl/$coverPath$this"
-}
+private fun String.toAbsoluteThumbnailUrl(cdnUrl: String, coverPath: String): String = if (startsWith("https://") || startsWith("http://")) this else "$cdnUrl/$coverPath$this"
 
 fun String.toStatus(): Int = when (this) {
     "Ongoing" -> SManga.ONGOING

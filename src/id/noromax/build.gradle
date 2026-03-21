@@ -2,8 +2,9 @@ ext {
     extName = 'Noromax'
     extClass = '.Noromax'
     themePkg = 'mangathemesia'
-    baseUrl = 'https://noromax.my.id'
-    overrideVersionCode = 0
+    baseUrl = 'https://noromax02.my.id'
+    overrideVersionCode = 3
+    isNsfw = true
 }
 
 apply from: "$rootDir/common.gradle"

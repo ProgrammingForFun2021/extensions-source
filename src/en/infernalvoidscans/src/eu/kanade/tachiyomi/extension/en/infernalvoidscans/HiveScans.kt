@@ -2,12 +2,13 @@ package eu.kanade.tachiyomi.extension.en.infernalvoidscans
 
 import eu.kanade.tachiyomi.multisrc.iken.Iken
 
-class HiveScans : Iken(
-    "Hive Scans",
-    "en",
-    "https://hivetoon.com",
-) {
-
+class HiveScans :
+    Iken(
+        "Hive Scans",
+        "en",
+        "https://hivetoons.org",
+        "https://api.hivetoons.org",
+    ) {
     override val versionId = 2
 
     override val client = super.client.newBuilder()

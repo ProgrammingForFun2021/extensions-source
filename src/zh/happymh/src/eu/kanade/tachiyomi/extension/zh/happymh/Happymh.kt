@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.zh.happymh
 
-import android.app.Application
 import android.widget.Toast
 import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
@@ -18,6 +17,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferences
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import okhttp3.FormBody
@@ -30,22 +30,21 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.asResponseBody
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
 
 const val PREF_KEY_CUSTOM_UA = "pref_key_custom_ua_"
 
-class Happymh : HttpSource(), ConfigurableSource {
+class Happymh :
+    HttpSource(),
+    ConfigurableSource {
     override val name: String = "嗨皮漫画"
     override val lang: String = "zh"
     override val supportsLatest: Boolean = true
 
     override val baseUrl: String = "https://m.happymh.com"
     private val json: Json by injectLazy()
-    private val chapterUrlToCode = hashMapOf<String, String>()
 
-    private val preferences = Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
+    private val preferences = getPreferences()
 
     init {
         val oldUa = preferences.getString("userAgent", null)
@@ -59,7 +58,7 @@ class Happymh : HttpSource(), ConfigurableSource {
     private val rewriteOctetStream: Interceptor = Interceptor { chain ->
         val originalResponse: Response = chain.proceed(chain.request())
         if (originalResponse.headers("Content-Type")
-            .contains("application/octet-stream") && originalResponse.request.url.toString()
+                .contains("application/octet-stream") && originalResponse.request.url.toString()
                 .contains(".jpg")
         ) {
             val orgBody = originalResponse.body.source()
@@ -90,8 +89,8 @@ class Happymh : HttpSource(), ConfigurableSource {
 
     // Requires login, otherwise result is the same as latest updates
     override fun popularMangaRequest(page: Int): Request {
-        val header = headersBuilder().add("referer", "$baseUrl/latest").build()
-        return GET("$baseUrl/apis/c/index?pn=$page&series_status=-1&order=views", header)
+        val headers = headersBuilder().add("Referer", "$baseUrl/latest").build()
+        return GET("$baseUrl/apis/c/index?pn=$page&series_status=-1&order=views", headers)
     }
 
     override fun popularMangaParse(response: Response): MangasPage {
@@ -112,8 +111,8 @@ class Happymh : HttpSource(), ConfigurableSource {
     // Latest
 
     override fun latestUpdatesRequest(page: Int): Request {
-        val header = headersBuilder().add("referer", "$baseUrl/latest").build()
-        return GET("$baseUrl/apis/c/index?pn=$page&series_status=-1&order=last_date", header)
+        val headers = headersBuilder().add("Referer", "$baseUrl/latest").build()
+        return GET("$baseUrl/apis/c/index?pn=$page&series_status=-1&order=last_date", headers)
     }
 
     override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
@@ -121,21 +120,43 @@ class Happymh : HttpSource(), ConfigurableSource {
     // Search
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val body = FormBody.Builder()
-            .addEncoded("searchkey", query)
-            .add("v", "v2.13")
-            .build()
+        if (query.isNotEmpty()) {
+            val body = FormBody.Builder()
+                .addEncoded("searchkey", query)
+                .add("v", "v2.13")
+                .build()
 
-        val header = headersBuilder()
-            .add("referer", "$baseUrl/sssearch")
-            .build()
+            val headers = headersBuilder()
+                .add("Referer", "$baseUrl/sssearch")
+                .build()
 
-        return POST("$baseUrl/v2.0/apis/manga/ssearch", header, body)
+            return POST("$baseUrl/v2.0/apis/manga/ssearch", headers, body)
+        }
+        val url = "$baseUrl/apis/c/index".toHttpUrl().newBuilder()
+        filters.filterIsInstance<UriPartFilter>().forEach {
+            if (it.selected.isNotEmpty()) {
+                url.addQueryParameter(it.key, it.selected)
+            }
+        }
+        val headers = headersBuilder().add("Referer", "$baseUrl/latest/${url.build().query}").build()
+        url.addQueryParameter("pn", page.toString())
+        return GET(url.build(), headers)
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
+        if (response.request.url.encodedPath.contains("/apis/c/index")) {
+            // for filter response
+            return popularMangaParse(response)
+        }
         return MangasPage(popularMangaParse(response).mangas, false)
     }
+
+    override fun getFilterList(): FilterList = FilterList(
+        GenreFilter(),
+        AreaFilter(),
+        AudienceFilter(),
+        StatusFilter(),
+    )
 
     // Details
 
@@ -170,13 +191,12 @@ class Happymh : HttpSource(), ConfigurableSource {
     private fun fetchChapterByPageAsObservable(
         manga: SManga,
         page: Int,
-    ): Observable<Pair<Int, ChapterByPageResponseData>> {
-        return Observable.just(fetchChapterByPage(manga, page)).concatMap {
-            if (it.isPageEnd()) {
-                Observable.just(page to it)
-            } else {
-                Observable.just(page to it).concatWith(fetchChapterByPageAsObservable(manga, page + 1))
-            }
+    ): Observable<Pair<Int, ChapterByPageResponseData>> = Observable.just(fetchChapterByPage(manga, page)).concatMap {
+        if (it.isPageEnd()) {
+            Observable.just(page to it)
+        } else {
+            Observable.just(page to it)
+                .concatWith(fetchChapterByPageAsObservable(manga, page + 1))
         }
     }
 
@@ -192,79 +212,62 @@ class Happymh : HttpSource(), ConfigurableSource {
                         name = data.chapterName
                         // create a dummy chapter url : /comic_id/dummy_mark/chapter_id#expect_page
                         url = "/$comicId/$DUMMY_CHAPTER_MARK/${data.id}#${it.first}"
-                        chapter_number = data.order.toFloat()
                     }
                 }
             }
             .toList()
-            .map { it.flatten().sortedByDescending { chapter -> chapter.chapter_number } }
-            .map {
-                // remove order mark
-                it.onEach { chapter ->
-                    chapter.chapter_number = -1f
-                }
-            }
+            .map { it.flatten().reversed() }
     }
 
     override fun chapterListParse(response: Response) = throw UnsupportedOperationException()
 
     override fun getChapterUrl(chapter: SChapter): String {
-        return baseUrl + (chapterUrlToCode[chapter.url]?.let { "/mangaread/$it" } ?: chapter.url)
+        val url = "$baseUrl${chapter.url}".toHttpUrl()
+        val comicId = url.pathSegments[0]
+        val chapterId = url.pathSegments[2]
+        return "$baseUrl/mangaread/$comicId/$chapterId"
     }
 
     // Pages
-
-    private fun fetchChapterCode(chapter: SChapter): String? {
-        val url = "$baseUrl${chapter.url}".toHttpUrl()
-        val expectPage = url.fragment?.toIntOrNull() ?: 1
-        val comicId = url.pathSegments[0]
-        val chapterId = url.pathSegments[2].toLong()
-        var code = fetchChapterByPage(comicId, expectPage).items.find { it.id == chapterId }?.codes
-        if (code == null) {
-            // Do full search for find target code
-            var page = 1
-            var end = false
-            while (!end && code == null) {
-                val resp = fetchChapterByPage(comicId, page)
-                code = resp.items.find { it.id == chapterId }?.codes
-                end = resp.isPageEnd()
-                page += 1
-            }
-        }
-        return code?.also { chapterUrlToCode[chapter.url] = it }
-    }
 
     override fun pageListRequest(chapter: SChapter): Request {
         if (!chapter.url.contains(DUMMY_CHAPTER_MARK)) {
             // Old format is detected
             throw Exception("请刷新章节列表")
         }
-        val code = fetchChapterCode(chapter) ?: throw Exception("找不到章节地址，请尝试刷新章节列表")
-        val url = "$baseUrl/v2.0/apis/manga/reading?code=$code&v=v3.1818134"
+        val chapterUrl = "$baseUrl${chapter.url}".toHttpUrl()
+        val comicId = chapterUrl.pathSegments[0]
+        val chapterId = chapterUrl.pathSegments[2]
+
+        val url = "$baseUrl/v2.0/apis/manga/reading?code=$comicId&cid=$chapterId&v=v3.1919111"
         // Some chapters return 403 without this header
-        val header = headersBuilder()
+        val headers = headersBuilder()
             .add("X-Requested-With", "XMLHttpRequest")
-            .set("Referer", baseUrl + chapter.url)
+            .set("Referer", "$baseUrl/mangaread/$comicId/$chapterId")
             .build()
-        return GET(url, header)
+        return GET(url, headers)
     }
 
-    override fun pageListParse(response: Response): List<Page> {
-        return response.parseAs<PageListResponseDto>().data.scans
-            // If n == 1, the image is from next chapter
-            .filter { it.n == 0 }
-            .mapIndexed { index, it ->
-                Page(index, "", it.url)
+    override fun pageListParse(response: Response): List<Page> = response.parseAs<PageListResponseDto>().data.scans
+        // If n == 1, the image is from next chapter
+        .filter { it.n == 0 }
+        .mapIndexed { index, it ->
+            // Strip q=... for large images (> 16383px) to avoid WebpExceedRange error
+            val url = if (it.width > 16383 || it.height > 16383) {
+                it.url.substringBefore("?q=")
+            } else {
+                it.url
             }
-    }
+            Page(index, "", url)
+        }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     override fun imageRequest(page: Page): Request {
-        val header = headersBuilder()
+        val headers = headersBuilder()
             .set("Referer", "$baseUrl/")
             .build()
-        return GET(page.imageUrl!!, header)
+        return GET(page.imageUrl!!, headers)
     }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
@@ -292,9 +295,7 @@ class Happymh : HttpSource(), ConfigurableSource {
         json.decodeFromStream(it.body.byteStream())
     }
 
-    private fun ChapterByPageResponseData.isPageEnd(): Boolean {
-        return isEnd == 1 || items.isEmpty()
-    }
+    private fun ChapterByPageResponseData.isPageEnd(): Boolean = isEnd == 1 || items.isEmpty()
 
     companion object {
         private const val DUMMY_CHAPTER_MARK = "dummy-mark"

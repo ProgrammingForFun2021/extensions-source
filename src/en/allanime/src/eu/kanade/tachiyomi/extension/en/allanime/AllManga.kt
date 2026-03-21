@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.en.allanime
 
-import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
@@ -16,14 +15,15 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.utils.getPreferencesLazy
 import kotlinx.serialization.json.float
 import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 
-class AllManga : ConfigurableSource, HttpSource() {
+class AllManga :
+    HttpSource(),
+    ConfigurableSource {
 
     override val name = "AllManga"
 
@@ -37,9 +37,7 @@ class AllManga : ConfigurableSource, HttpSource() {
 
     override val supportsLatest = true
 
-    private val preferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences by getPreferencesLazy()
 
     override val client = network.cloudflareClient.newBuilder()
         .rateLimit(1)
@@ -154,17 +152,16 @@ class AllManga : ConfigurableSource, HttpSource() {
     }
 
     override fun getMangaUrl(manga: SManga): String {
-        return "$baseUrl${manga.url}"
+        val mangaId = manga.url.split("/")[2]
+        return "$baseUrl/manga/$mangaId"
     }
 
     /* Chapters */
-    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
-        return client.newCall(chapterListRequest(manga))
-            .asObservableSuccess()
-            .map { response ->
-                chapterListParse(response, manga)
-            }
-    }
+    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> = client.newCall(chapterListRequest(manga))
+        .asObservableSuccess()
+        .map { response ->
+            chapterListParse(response, manga)
+        }
 
     override fun chapterListRequest(manga: SManga): Request {
         val mangaId = manga.url.split("/")[2]
@@ -194,12 +191,13 @@ class AllManga : ConfigurableSource, HttpSource() {
         return chapters.map { it.toSChapter(mangaUrl) }
     }
 
-    override fun chapterListParse(response: Response): List<SChapter> {
-        throw UnsupportedOperationException("Not used")
-    }
+    override fun chapterListParse(response: Response): List<SChapter> = throw UnsupportedOperationException("Not used")
 
     override fun getChapterUrl(chapter: SChapter): String {
-        return "$baseUrl${chapter.url}"
+        val chapterUrlParts = chapter.url.split("/")
+        val mangaId = chapterUrlParts[2]
+        val chapterSlug = chapterUrlParts[4]
+        return "$baseUrl/read/$mangaId/$chapterSlug"
     }
 
     /* Pages */
@@ -255,9 +253,7 @@ class AllManga : ConfigurableSource, HttpSource() {
         return GET(newUrl, headers)
     }
 
-    override fun imageUrlParse(response: Response): String {
-        throw UnsupportedOperationException()
-    }
+    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         ListPreference(screen.context).apply {

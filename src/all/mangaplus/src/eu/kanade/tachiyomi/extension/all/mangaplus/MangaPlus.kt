@@ -1,11 +1,9 @@
 package eu.kanade.tachiyomi.extension.all.mangaplus
 
-import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
-import eu.kanade.tachiyomi.lib.i18n.Intl
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.asObservableSuccess
 import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
@@ -16,6 +14,8 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.lib.i18n.Intl
+import keiyoushi.utils.getPreferencesLazy
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.Headers
@@ -27,8 +27,6 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
 import java.util.UUID
 
@@ -36,7 +34,8 @@ class MangaPlus(
     override val lang: String,
     private val internalLang: String,
     private val langCode: Language,
-) : HttpSource(), ConfigurableSource {
+) : HttpSource(),
+    ConfigurableSource {
 
     override val name = "MANGA Plus by SHUEISHA"
 
@@ -50,7 +49,7 @@ class MangaPlus(
         .add("User-Agent", USER_AGENT)
         .add("SESSION-TOKEN", UUID.randomUUID().toString())
 
-    override val client: OkHttpClient = network.client.newBuilder()
+    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
         .addInterceptor(::imageIntercept)
         .addInterceptor(::thumbnailIntercept)
         .rateLimitHost(API_URL.toHttpUrl(), 1)
@@ -68,9 +67,7 @@ class MangaPlus(
         )
     }
 
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences: SharedPreferences by getPreferencesLazy()
 
     /**
      * Private cache to find the newest thumbnail URL in case the existing one
@@ -80,18 +77,15 @@ class MangaPlus(
     private val titleCache = mutableMapOf<Int, Title>()
     private lateinit var directory: List<Title>
 
-    override fun fetchPopularManga(page: Int): Observable<MangasPage> {
-        return if (page == 1) {
-            client.newCall(popularMangaRequest(page))
-                .asObservableSuccess()
-                .map { popularMangaParse(it) }
-        } else {
-            Observable.just(parseDirectory(page))
-        }
+    override fun fetchPopularManga(page: Int): Observable<MangasPage> = if (page == 1) {
+        client.newCall(popularMangaRequest(page))
+            .asObservableSuccess()
+            .map { popularMangaParse(it) }
+    } else {
+        Observable.just(parseDirectory(page))
     }
 
-    override fun popularMangaRequest(page: Int) =
-        GET("$API_URL/title_list/rankingV2?lang=$internalLang&type=hottest&clang=$internalLang&format=json", headers)
+    override fun popularMangaRequest(page: Int) = GET("$API_URL/title_list/rankingV2?lang=$internalLang&type=hottest&clang=$internalLang&format=json", headers)
 
     override fun popularMangaParse(response: Response): MangasPage {
         val result = response.asMangaPlusResponse()
@@ -117,18 +111,15 @@ class MangaPlus(
         return MangasPage(pageList.map(Title::toSManga), hasNextPage)
     }
 
-    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> {
-        return if (page == 1) {
-            client.newCall(latestUpdatesRequest(page))
-                .asObservableSuccess()
-                .map { latestUpdatesParse(it) }
-        } else {
-            Observable.just(parseDirectory(page))
-        }
+    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> = if (page == 1) {
+        client.newCall(latestUpdatesRequest(page))
+            .asObservableSuccess()
+            .map { latestUpdatesParse(it) }
+    } else {
+        Observable.just(parseDirectory(page))
     }
 
-    override fun latestUpdatesRequest(page: Int) =
-        GET("$API_URL/web/web_homeV4?lang=$internalLang&clang=$internalLang&format=json", headers)
+    override fun latestUpdatesRequest(page: Int) = GET("$API_URL/home_v4?lang=$internalLang&clang=$internalLang&format=json", headers)
 
     override fun latestUpdatesParse(response: Response): MangasPage {
         val result = response.asMangaPlusResponse()
@@ -137,26 +128,16 @@ class MangaPlus(
             result.error!!.langPopup(langCode)?.body ?: intl["unknown_error"]
         }
 
-        directory = result.success.webHomeViewV4!!.groups
-            .flatMap(UpdatedTitleV2Group::titleGroups)
-            .flatMap(OriginalTitleGroup::titles)
-            .map(UpdatedTitle::title)
-            .filter { it.language == langCode }
-            .distinctBy(Title::titleId)
+        directory =
+            result.success.homeViewV3!!
+                .groups
+                .flatMap(UpdatedTitleV2Group::titleGroups)
+                .flatMap(OriginalTitleGroup::titles)
+                .map(UpdatedTitle::title)
+                .filter { it.language == langCode }
+                .distinctBy(Title::titleId)
 
         titleCache.putAll(directory.associateBy(Title::titleId))
-        titleCache.putAll(
-            result.success.webHomeViewV4.rankedTitles
-                .flatMap(RankedTitle::titles)
-                .filter { it.language == langCode }
-                .associateBy(Title::titleId),
-        )
-        titleCache.putAll(
-            result.success.webHomeViewV4.featuredTitleLists
-                .flatMap(FeaturedTitleList::featuredTitles)
-                .filter { it.language == langCode }
-                .associateBy(Title::titleId),
-        )
 
         return parseDirectory(1)
     }
@@ -165,14 +146,12 @@ class MangaPlus(
         page: Int,
         query: String,
         filters: FilterList,
-    ): Observable<MangasPage> {
-        return if (page == 1) {
-            client.newCall(searchMangaRequest(page, query, filters))
-                .asObservableSuccess()
-                .map { searchMangaParse(it, query) }
-        } else {
-            Observable.just(parseDirectory(page))
-        }
+    ): Observable<MangasPage> = if (page == 1) {
+        client.newCall(searchMangaRequest(page, query, filters))
+            .asObservableSuccess()
+            .map { searchMangaParse(it, query) }
+    } else {
+        Observable.just(parseDirectory(page))
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {

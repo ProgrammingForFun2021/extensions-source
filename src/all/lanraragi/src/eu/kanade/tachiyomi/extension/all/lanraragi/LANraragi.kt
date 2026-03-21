@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.all.lanraragi
 
-import android.app.Application
 import android.content.SharedPreferences
 import android.net.Uri
 import android.text.InputType
@@ -18,6 +17,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.utils.getPreferencesLazy
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -35,10 +35,14 @@ import rx.schedulers.Schedulers
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.IOException
+import java.net.URL
 import java.security.MessageDigest
 import kotlin.math.max
 
-open class LANraragi(private val suffix: String = "") : ConfigurableSource, UnmeteredSource, HttpSource() {
+open class LANraragi(private val suffix: String = "") :
+    HttpSource(),
+    ConfigurableSource,
+    UnmeteredSource {
     override val baseUrl by lazy { getPrefBaseUrl() }
 
     override val lang = "all"
@@ -130,28 +134,27 @@ open class LANraragi(private val suffix: String = "") : ConfigurableSource, Unme
         )
     }
 
-    override fun pageListRequest(chapter: SChapter): Request {
-        return GET(chapter.url, headers)
-    }
+    override fun pageListRequest(chapter: SChapter): Request = GET(chapter.url, headers)
 
     override fun pageListParse(response: Response): List<Page> {
         val archivePage = json.decodeFromString<ArchivePage>(response.body.string())
 
         return archivePage.pages.mapIndexed { index, url ->
-            val uri = Uri.parse("${baseUrl}${url.trimStart('.')}")
+            var newUrl = url
+            val subPath = URL(baseUrl).path
+            if (!subPath.isNullOrEmpty()) {
+                newUrl = newUrl.replaceFirst(subPath, "")
+            }
+            val uri = Uri.parse("${baseUrl}${newUrl.trimStart('.')}")
             Page(index, uri.toString(), uri.toString(), uri)
         }
     }
 
     override fun imageUrlParse(response: Response) = throw UnsupportedOperationException("imageUrlParse is unused")
 
-    override fun popularMangaRequest(page: Int): Request {
-        return searchMangaRequest(page, "", FilterList())
-    }
+    override fun popularMangaRequest(page: Int): Request = searchMangaRequest(page, "", FilterList())
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        return searchMangaParse(response)
-    }
+    override fun popularMangaParse(response: Response): MangasPage = searchMangaParse(response)
 
     override fun latestUpdatesRequest(page: Int): Request {
         val filters = mutableListOf<Filter<*>>()
@@ -167,9 +170,7 @@ open class LANraragi(private val suffix: String = "") : ConfigurableSource, Unme
         return searchMangaRequest(page, "", FilterList(filters))
     }
 
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        return searchMangaParse(response)
-    }
+    override fun latestUpdatesParse(response: Response): MangasPage = searchMangaParse(response)
 
     private var lastResultCount: Int = 100
     private var lastRecordsFiltered: Int = 0
@@ -190,11 +191,17 @@ open class LANraragi(private val suffix: String = "") : ConfigurableSource, Unme
                         startPageOffset -= 1
                     }
                 }
+
                 is NewArchivesOnly -> if (filter.state) uri.appendQueryParameter("newonly", "true")
+
                 is UntaggedArchivesOnly -> if (filter.state) uri.appendQueryParameter("untaggedonly", "true")
+
                 is DescendingOrder -> if (filter.state) uri.appendQueryParameter("order", "desc")
+
                 is SortByNamespace -> if (filter.state.isNotEmpty()) uri.appendQueryParameter("sortby", filter.state.trim())
+
                 is CategorySelect -> if (filter.state > 0) uri.appendQueryParameter("category", filter.toUriPart())
+
                 else -> {}
             }
         }
@@ -284,9 +291,7 @@ open class LANraragi(private val suffix: String = "") : ConfigurableSource, Unme
         (0..7).map { bytes[it].toLong() and 0xff shl 8 * (7 - it) }.reduce(Long::or) and Long.MAX_VALUE
     }
 
-    internal val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    internal val preferences: SharedPreferences by getPreferencesLazy()
 
     private fun getPrefBaseUrl(): String = preferences.getString(HOSTNAME_KEY, HOSTNAME_DEFAULT)!!
     private fun getPrefAPIKey(): String = preferences.getString(APIKEY_KEY, "")!!
@@ -324,49 +329,45 @@ open class LANraragi(private val suffix: String = "") : ConfigurableSource, Unme
         screen.addPreference(screen.editTextPreference(URL_TAG_PREFIX_KEY, "Set tag prefix to get WebView URL", URL_TAG_PREFIX_DEFAULT, "Example: 'source:' will try to get the URL from the first tag starting with 'source:' and it will open it in the WebView. Leave empty for the default behavior."))
     }
 
-    private fun androidx.preference.PreferenceScreen.checkBoxPreference(key: String, title: String, default: Boolean, summary: String = ""): androidx.preference.CheckBoxPreference {
-        return androidx.preference.CheckBoxPreference(context).apply {
-            this.key = key
-            this.title = title
-            this.summary = summary
-            setDefaultValue(default)
+    private fun androidx.preference.PreferenceScreen.checkBoxPreference(key: String, title: String, default: Boolean, summary: String = ""): androidx.preference.CheckBoxPreference = androidx.preference.CheckBoxPreference(context).apply {
+        this.key = key
+        this.title = title
+        this.summary = summary
+        setDefaultValue(default)
 
-            setOnPreferenceChangeListener { _, newValue ->
-                preferences.edit().putBoolean(this.key, newValue as Boolean).commit()
-            }
+        setOnPreferenceChangeListener { _, newValue ->
+            preferences.edit().putBoolean(this.key, newValue as Boolean).commit()
         }
     }
 
-    private fun androidx.preference.PreferenceScreen.editTextPreference(key: String, title: String, default: String, summary: String, isPassword: Boolean = false, refreshSummary: Boolean = false): androidx.preference.EditTextPreference {
-        return androidx.preference.EditTextPreference(context).apply {
-            this.key = key
-            this.title = title
-            this.summary = summary
-            this.setDefaultValue(default)
+    private fun androidx.preference.PreferenceScreen.editTextPreference(key: String, title: String, default: String, summary: String, isPassword: Boolean = false, refreshSummary: Boolean = false): androidx.preference.EditTextPreference = androidx.preference.EditTextPreference(context).apply {
+        this.key = key
+        this.title = title
+        this.summary = summary
+        this.setDefaultValue(default)
 
-            if (isPassword) {
-                setOnBindEditTextListener {
-                    it.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                }
+        if (isPassword) {
+            setOnBindEditTextListener {
+                it.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             }
+        }
 
-            setOnPreferenceChangeListener { _, newValue ->
-                try {
-                    val newString = newValue.toString()
-                    val res = preferences.edit().putString(this.key, newString).commit()
+        setOnPreferenceChangeListener { _, newValue ->
+            try {
+                val newString = newValue.toString()
+                val res = preferences.edit().putString(this.key, newString).commit()
 
-                    if (refreshSummary) {
-                        this.apply {
-                            this.summary = newValue as String
-                        }
+                if (refreshSummary) {
+                    this.apply {
+                        this.summary = newValue as String
                     }
-
-                    Toast.makeText(context, "Restart Tachiyomi to apply new setting.", Toast.LENGTH_LONG).show()
-                    res
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    false
                 }
+
+                Toast.makeText(context, "Restart Tachiyomi to apply new setting.", Toast.LENGTH_LONG).show()
+                res
+            } catch (e: Exception) {
+                e.printStackTrace()
+                false
             }
         }
     }
@@ -381,8 +382,7 @@ open class LANraragi(private val suffix: String = "") : ConfigurableSource, Unme
         return (archive?.get("arcid") ?: archive?.get("id"))?.jsonPrimitive?.content ?: ""
     }
 
-    open class UriPartFilter(displayName: String, private val vals: Array<Pair<String?, String>>) :
-        Filter.Select<String>(displayName, vals.map { it.second }.toTypedArray()) {
+    open class UriPartFilter(displayName: String, private val vals: Array<Pair<String?, String>>) : Filter.Select<String>(displayName, vals.map { it.second }.toTypedArray()) {
         fun toUriPart() = vals[state].first
     }
 
@@ -424,13 +424,9 @@ open class LANraragi(private val suffix: String = "") : ConfigurableSource, Unme
             .toTypedArray()
     }
 
-    private fun startingPageStats(): String {
-        return if (maxResultCount > 0 && totalRecords > 0) " ($maxResultCount / $lastRecordsFiltered items)" else ""
-    }
+    private fun startingPageStats(): String = if (maxResultCount > 0 && totalRecords > 0) " ($maxResultCount / $lastRecordsFiltered items)" else ""
 
-    private fun getApiUriBuilder(path: String): Uri.Builder {
-        return Uri.parse("$baseUrl$path").buildUpon()
-    }
+    private fun getApiUriBuilder(path: String): Uri.Builder = Uri.parse("$baseUrl$path").buildUpon()
 
     private fun getThumbnailUri(id: String): String {
         val uri = getApiUriBuilder("/api/archives/$id/thumbnail")
@@ -438,21 +434,13 @@ open class LANraragi(private val suffix: String = "") : ConfigurableSource, Unme
         return uri.toString()
     }
 
-    private tailrec fun getTopResponse(response: Response): Response {
-        return if (response.priorResponse == null) response else getTopResponse(response.priorResponse!!)
-    }
+    private tailrec fun getTopResponse(response: Response): Response = if (response.priorResponse == null) response else getTopResponse(response.priorResponse!!)
 
-    private fun getStart(response: Response): Int {
-        return getTopResponse(response).request.url.queryParameter("start")!!.toInt()
-    }
+    private fun getStart(response: Response): Int = getTopResponse(response).request.url.queryParameter("start")!!.toInt()
 
-    private fun getReaderId(url: String): String {
-        return Regex("""/reader\?id=(\w{40})""").find(url)?.groupValues?.get(1) ?: ""
-    }
+    private fun getReaderId(url: String): String = Regex("""/reader\?id=(\w{40})""").find(url)?.groupValues?.get(1) ?: ""
 
-    private fun getThumbnailId(url: String): String {
-        return Regex("""/(\w{40})/thumbnail""").find(url)?.groupValues?.get(1) ?: ""
-    }
+    private fun getThumbnailId(url: String): String = Regex("""/(\w{40})/thumbnail""").find(url)?.groupValues?.get(1) ?: ""
 
     private fun getNSTag(tags: String?, tag: String): List<String>? {
         tags?.split(',')?.forEach {

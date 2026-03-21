@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.en.mangamo
 
-import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.EditTextPreference
 import androidx.preference.MultiSelectListPreference
@@ -23,29 +22,28 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.utils.getPreferencesLazy
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.io.IOException
 
-class Mangamo : ConfigurableSource, HttpSource() {
+class Mangamo :
+    HttpSource(),
+    ConfigurableSource {
 
     override val name = "Mangamo"
 
     override val lang = "en"
 
-    override val baseUrl = "https://mangamo.com"
+    override val baseUrl = "https://www.mangamo.com"
 
     override val supportsLatest = true
 
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences: SharedPreferences by getPreferencesLazy()
 
     private val helper = MangamoHelper(headers)
 
@@ -86,7 +84,7 @@ class Mangamo : ConfigurableSource, HttpSource() {
     private val exclusivesOnlyPref
         get() = preferences.getStringSet(MangamoConstants.EXCLUSIVES_ONLY_PREF, setOf())!!
 
-    override val client: OkHttpClient = super.client.newBuilder()
+    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
         .addNetworkInterceptor {
             val request = it.request()
             val response = it.proceed(request)
@@ -267,9 +265,7 @@ class Mangamo : ConfigurableSource, HttpSource() {
 
     // Manga details
 
-    override fun getMangaUrl(manga: SManga): String {
-        return baseUrl + manga.url
-    }
+    override fun getMangaUrl(manga: SManga): String = baseUrl + manga.url
 
     override fun mangaDetailsRequest(manga: SManga): Request {
         val uri = getMangaUrl(manga).toHttpUrl()
@@ -363,16 +359,13 @@ class Mangamo : ConfigurableSource, HttpSource() {
         }
     }
 
-    override fun chapterListParse(response: Response): List<SChapter> =
-        throw UnsupportedOperationException()
+    override fun chapterListParse(response: Response): List<SChapter> = throw UnsupportedOperationException()
 
-    private fun getPagesImagesRequest(series: Int, chapter: Int): Request {
-        return POST(
-            "${MangamoConstants.FIREBASE_FUNCTION_BASE_PATH}/page/$series/$chapter",
-            helper.jsonHeaders,
-            "{\"idToken\":\"${auth.getIdToken()}\"}".toRequestBody(),
-        )
-    }
+    private fun getPagesImagesRequest(series: Int, chapter: Int): Request = POST(
+        "${MangamoConstants.FIREBASE_FUNCTION_BASE_PATH}/page/$series/$chapter",
+        helper.jsonHeaders,
+        "{\"idToken\":\"${auth.getIdToken()}\"}".toRequestBody(),
+    )
 
     override fun pageListRequest(chapter: SChapter): Request {
         val uri = (baseUrl + chapter.url).toHttpUrl()

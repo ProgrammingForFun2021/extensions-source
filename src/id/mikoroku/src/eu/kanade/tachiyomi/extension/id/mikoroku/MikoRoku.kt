@@ -3,22 +3,17 @@ package eu.kanade.tachiyomi.extension.id.mikoroku
 import eu.kanade.tachiyomi.multisrc.zeistmanga.Genre
 import eu.kanade.tachiyomi.multisrc.zeistmanga.Status
 import eu.kanade.tachiyomi.multisrc.zeistmanga.ZeistManga
+import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.util.asJsoup
 import okhttp3.Response
-import org.jsoup.nodes.Element
 
-class MikoRoku : ZeistManga("MikoRoku", "https://www.mikoroku.com", "id") {
+class MikoRoku : ZeistManga("MikoRoku", "https://www.mikoroku.top", "id") {
 
-    // ============================== Popular ===============================
-    override val popularMangaSelector = "div.PopularPosts article"
-    override val popularMangaSelectorTitle = ".post-title a"
-    override val popularMangaSelectorUrl = ".post-title a"
+    override fun popularMangaRequest(page: Int) = latestUpdatesRequest(page)
+    override fun popularMangaParse(response: Response) = searchMangaParse(response)
 
-    // ============================== Filters ===============================
     override val hasFilters = true
-
-    // The source actually has both, but they return no result, so its useless.
     override val hasLanguageFilter = false
     override val hasTypeFilter = false
 
@@ -26,6 +21,8 @@ class MikoRoku : ZeistManga("MikoRoku", "https://www.mikoroku.com", "id") {
         Status("Semua", ""),
         Status("Ongoing", "Ongoing"),
         Status("Completed", "Completed"),
+        Status("Hiatus", "Hiatus"),
+        Status("Dropped", "Dropped"),
     )
 
     override fun getGenreList() = listOf(
@@ -35,14 +32,12 @@ class MikoRoku : ZeistManga("MikoRoku", "https://www.mikoroku.com", "id") {
         Genre("Dark Fantasy", "Dark Fantasy"),
         Genre("Drama", "Drama"),
         Genre("Fantasy", "Fantasy"),
-        Genre("Harem", "H4rem"),
         Genre("Historical", "Historical"),
         Genre("Horror", "Horror"),
         Genre("Isekai", "Isekai"),
         Genre("Magic", "Magic"),
         Genre("Mecha", "Mecha"),
         Genre("Military", "Military"),
-        Genre("Monsters", "Monsters"),
         Genre("Mystery", "Mystery"),
         Genre("Psychological", "Psychological"),
         Genre("Romance", "Romance"),
@@ -56,31 +51,39 @@ class MikoRoku : ZeistManga("MikoRoku", "https://www.mikoroku.com", "id") {
         Genre("Tragedy", "Tragedy"),
     )
 
-    // =========================== Manga Details ============================
-    override val mangaDetailsSelector = "div.section#main div.widget:has(main)"
-    override val mangaDetailsSelectorGenres = "dl > dd > a[rel=tag]"
-
     override fun mangaDetailsParse(response: Response): SManga {
-        val document = response.use { it.asJsoup() }
-        val profileManga = document.selectFirst(mangaDetailsSelector)!!
+        val document = response.asJsoup()
+        val header = document.selectFirst("header[itemprop=mainEntity]")
+            ?: document.selectFirst("header.bg-white")!!
+
         return SManga.create().apply {
-            with(profileManga) {
-                thumbnail_url = selectFirst("img")?.absUrl("src")
-                description = document.select(mangaDetailsSelectorDescription).text()
-                genre = select(mangaDetailsSelectorGenres).eachText().joinToString()
-                status = parseStatus(selectFirst("span[data-status]")?.text().orEmpty())
-                author = getInfo("Author")
-                artist = getInfo("Artist")
-            }
+            thumbnail_url = header.selectFirst("img.thumb")?.attr("abs:src")
+            title = header.selectFirst("h1[itemprop=name]")?.text()!!
+            status = parseStatus(header.selectFirst("span[data-status]")?.text()!!)
+            description = document.selectFirst("#synopsis")?.ownText()?.trim()
+            author = document.select("#extra-info .y6x11p")
+                .firstOrNull { it.ownText().contains("Author", ignoreCase = true) }
+                ?.selectFirst("span.dt")?.text()
         }
     }
 
-    private fun Element.getInfo(text: String): String? =
-        selectFirst("$mangaDetailsSelectorInfo:containsOwn($text) > $mangaDetailsSelectorInfoDescription")
-            ?.text()
-            ?.trim()
+    override val chapterCategory: String = "Chapter"
 
-    // =============================== Pages ================================
-    // Specific/faster selection first, generic/slower last
-    override val pageListSelector = "article#reader div.separator a, article#reader"
+    override fun pageListParse(response: Response): List<Page> {
+        val document = response.asJsoup()
+        val images = when {
+            document.selectFirst("div.check-box") != null ->
+                document.select("div.check-box div.separator img[src]")
+            document.selectFirst("div[data=imageProtection]") != null ->
+                document.select("div[data=imageProtection] div.separator img[src]")
+            document.selectFirst("#post-body div.separator") != null ->
+                document.select("#post-body div.separator img[src]")
+            else ->
+                document.select(".post-body div.separator img[src]")
+        }
+
+        return images.mapIndexed { index, img ->
+            Page(index, imageUrl = img.attr("abs:src"))
+        }
+    }
 }

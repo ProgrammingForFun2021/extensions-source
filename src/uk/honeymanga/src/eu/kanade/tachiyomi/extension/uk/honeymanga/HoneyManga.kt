@@ -39,7 +39,7 @@ class HoneyManga : HttpSource() {
         .add("Origin", baseUrl)
         .add("Referer", baseUrl)
 
-    override val client = network.client.newBuilder()
+    override val client = network.cloudflareClient.newBuilder()
         .rateLimitHost(API_URL.toHttpUrl(), 10)
         .build()
 
@@ -106,7 +106,7 @@ class HoneyManga : HttpSource() {
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val result = response.asClass<HoneyMangaChapterResponseDto>()
-        return result.data.map {
+        return result.data.filter { !it.isMonetized }.map {
             val suffix = if (it.subChapterNum == 0) "" else ".${it.subChapterNum}"
             SChapter.create().apply {
                 url = "$baseUrl/read/${it.id}/${it.mangaId}"
@@ -156,12 +156,10 @@ class HoneyManga : HttpSource() {
         return POST("$API_URL/v2/manga/cursor-list", headers, body)
     }
 
-    private fun makeMangasPage(mangaList: List<HoneyMangaDto>): MangasPage {
-        return MangasPage(
-            mangaList.map(::makeSManga),
-            mangaList.size == DEFAULT_PAGE_SIZE,
-        )
-    }
+    private fun makeMangasPage(mangaList: List<HoneyMangaDto>): MangasPage = MangasPage(
+        mangaList.map(::makeSManga),
+        mangaList.size == DEFAULT_PAGE_SIZE,
+    )
 
     private fun makeSManga(mangaDto: HoneyMangaDto) = SManga.create().apply {
         title = mangaDto.title
@@ -174,7 +172,7 @@ class HoneyManga : HttpSource() {
 
         private const val SEARCH_API_URL = "https://search.api.honey-manga.com.ua"
 
-        private const val IMAGE_STORAGE_URL = "https://manga-storage.fra1.digitaloceanspaces.com/public-resources"
+        private const val IMAGE_STORAGE_URL = "https://hmvolumestorage.b-cdn.net/public-resources"
 
         private const val DEFAULT_PAGE_SIZE = 30
 
@@ -184,10 +182,8 @@ class HoneyManga : HttpSource() {
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ROOT)
         }
 
-        private fun String.toDate(): Long {
-            return runCatching { DATE_FORMATTER.parse(this)?.time }
-                .getOrNull() ?: 0L
-        }
+        private fun String.toDate(): Long = runCatching { DATE_FORMATTER.parse(this)?.time }
+            .getOrNull() ?: 0L
 
         private val json: Json by injectLazy()
 

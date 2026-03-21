@@ -68,6 +68,7 @@ class HattoriManga : HttpSource() {
                         getCsrftoken()
                         chain.proceed(addFormBody(req, query))
                     }
+
                     else -> this
                 }
             }
@@ -93,8 +94,7 @@ class HattoriManga : HttpSource() {
         csrfToken = document.selectFirst("meta[name=csrf-token]")!!.attr("content")
     }
 
-    override fun chapterListParse(response: Response) =
-        throw UnsupportedOperationException()
+    override fun chapterListParse(response: Response) = throw UnsupportedOperationException()
 
     override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
         val slug = manga.url.substringAfterLast('/')
@@ -116,10 +116,9 @@ class HattoriManga : HttpSource() {
         return Observable.just(chapters)
     }
 
-    private fun fetchChapterPageableList(slug: String, page: Int, manga: SManga): HMChapterDto =
-        client.newCall(GET("$baseUrl/load-more-chapters/$slug?page=$page", headers))
-            .execute()
-            .parseAs<HMChapterDto>()
+    private fun fetchChapterPageableList(slug: String, page: Int, manga: SManga): HMChapterDto = client.newCall(GET("$baseUrl/load-more-chapters/$slug?page=$page", headers))
+        .execute()
+        .parseAs<HMChapterDto>()
 
     override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/latest-chapters")
 
@@ -131,6 +130,15 @@ class HattoriManga : HttpSource() {
             description = document.selectFirst(".anime-details-text p")?.text()
             author = document.selectFirst(".anime-details-widget li:has(span:contains(Yazar))")?.ownText()
             artist = document.selectFirst(".anime-details-widget li:has(span:contains(Çizer))")?.ownText()
+
+            document.selectFirst(".anime-details-widget li:has(span:contains(Durum))")?.ownText()?.let {
+                status = when (it.lowercase()) {
+                    "devam ediyor" -> SManga.ONGOING
+                    "tamamlandı" -> SManga.COMPLETED
+                    else -> SManga.UNKNOWN
+                }
+            }
+
             genre = document.selectFirst(".anime-details-widget li:has(span:contains(Etiketler))")
                 ?.ownText()
                 ?.split(",")
@@ -140,24 +148,20 @@ class HattoriManga : HttpSource() {
         }
     }
 
-    override fun pageListParse(response: Response): List<Page> {
-        return response.asJsoup().select(".image-wrapper img").mapIndexed { index, element ->
-            Page(index, imageUrl = "$baseUrl${element.attr("data-src")}")
-        }.takeIf { it.isNotEmpty() } ?: throw Exception("Oturum açmanız, WebView'ı açmanız ve oturum açmanız gerekir")
-    }
+    override fun pageListParse(response: Response): List<Page> = response.asJsoup().select(".image-wrapper img").mapIndexed { index, element ->
+        Page(index, imageUrl = element.absUrl("data-src"))
+    }.takeIf { it.isNotEmpty() } ?: throw Exception("Oturum açmanız, WebView'ı açmanız ve oturum açmanız gerekir")
 
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        return response.use {
-            val mangas = it.parseAs<HMLatestUpdateDto>().chapters.map {
-                SManga.create().apply {
-                    val manga = it.manga
-                    title = manga.title
-                    thumbnail_url = "$baseUrl/storage/${manga.thumbnail}"
-                    url = "/manga/${manga.slug}"
-                }
-            }.distinctBy { manga -> manga.title }
-            MangasPage(mangas, false)
-        }
+    override fun latestUpdatesParse(response: Response): MangasPage = response.use {
+        val mangas = it.parseAs<HMLatestUpdateDto>().chapters.map {
+            SManga.create().apply {
+                val manga = it.manga
+                title = manga.title
+                thumbnail_url = "$baseUrl/storage/${manga.thumbnail}"
+                url = "/manga/${manga.slug}"
+            }
+        }.distinctBy { manga -> manga.title }
+        MangasPage(mangas, false)
     }
 
     override fun popularMangaParse(response: Response): MangasPage {
@@ -200,6 +204,7 @@ class HattoriManga : HttpSource() {
                 url.addQueryParameter("page", "$page")
                 GET(url.build(), headers)
             }
+
             else -> request
         }
     }
@@ -224,9 +229,6 @@ class HattoriManga : HttpSource() {
             val mangas = response.parseAs<List<SearchManga>>().map {
                 SManga.create().apply {
                     title = it.title
-                    description = it.description
-                    author = it.author
-                    artist = it.artist
                     thumbnail_url = "$baseUrl/storage/${it.thumbnail}"
                     url = "/manga/${it.slug}"
                 }
@@ -254,22 +256,21 @@ class HattoriManga : HttpSource() {
         thumbnail_url = element.selectFirst(".img-con")?.absUrl("data-setbg")
         genre = element.select(".product-card-con ul li").joinToString { it.text() }
         val script = element.attr("onclick")
-        setUrlWithoutDomain(REGEX_MANGA_URL.find(script)!!.groups["url"]!!.value)
+        setUrlWithoutDomain(REGEX_MANGA_URL.find(script)!!.groups[1]!!.value)
     }
 
-    private fun parseGenres(document: Document): List<Genre> {
-        return document.select(".tags-blog a")
-            .map { element -> Genre(element.text()) }
-    }
+    private fun parseGenres(document: Document): List<Genre> = document.select(".tags-blog a")
+        .map { element -> Genre(element.text()) }
 
-    private inline fun <reified T> Response.parseAs(): T {
-        return json.decodeFromString(body.string())
-    }
+    private inline fun <reified T> Response.parseAs(): T = json.decodeFromString(body.string())
 
     private fun Response.isPageExpired() = code == 419
 
-    private fun String.toDate(): Long =
-        try { dateFormat.parse(trim())!!.time } catch (_: Exception) { 0L }
+    private fun String.toDate(): Long = try {
+        dateFormat.parse(trim())!!.time
+    } catch (_: Exception) {
+        0L
+    }
 
     class GenreList(title: String, genres: List<Genre>) : Filter.Group<GenreCheckBox>(title, genres.map { GenreCheckBox(it.name, it.id) })
 
@@ -279,7 +280,7 @@ class HattoriManga : HttpSource() {
 
     companion object {
         const val SEARCH_PREFIX = "slug:"
-        val REGEX_MANGA_URL = """='(?<url>[^']+)""".toRegex()
+        val REGEX_MANGA_URL = """='([^']+)""".toRegex()
         val dateFormat = SimpleDateFormat("dd.MM.yyyy", Locale.US)
     }
 }

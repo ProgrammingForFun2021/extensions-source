@@ -1,11 +1,8 @@
 package eu.kanade.tachiyomi.extension.en.questionablecontent
 
-import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
-import eu.kanade.tachiyomi.lib.textinterceptor.TextInterceptor
-import eu.kanade.tachiyomi.lib.textinterceptor.TextInterceptorHelper
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
@@ -13,17 +10,20 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
+import keiyoushi.lib.textinterceptor.TextInterceptor
+import keiyoushi.lib.textinterceptor.TextInterceptorHelper
+import keiyoushi.utils.getPreferencesLazy
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.util.Date
 
-class QuestionableContent : ParsedHttpSource(), ConfigurableSource {
+class QuestionableContent :
+    ParsedHttpSource(),
+    ConfigurableSource {
 
     override val name = "Questionable Content"
     override val baseUrl = "https://www.questionablecontent.net"
@@ -31,7 +31,7 @@ class QuestionableContent : ParsedHttpSource(), ConfigurableSource {
     override val lang = "en"
 
     override val supportsLatest = false
-    override val client: OkHttpClient = super.client.newBuilder().addInterceptor(TextInterceptor()).build()
+    override val client: OkHttpClient = network.cloudflareClient.newBuilder().addInterceptor(TextInterceptor()).build()
 
     override fun fetchPopularManga(page: Int): Observable<MangasPage> {
         val manga = SManga.create().apply {
@@ -52,9 +52,7 @@ class QuestionableContent : ParsedHttpSource(), ConfigurableSource {
 
     override fun fetchMangaDetails(manga: SManga) = fetchPopularManga(1).map { it.mangas.first() }
 
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences: SharedPreferences by getPreferencesLazy()
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val chapters = super.chapterListParse(response).distinct()
@@ -70,8 +68,7 @@ class QuestionableContent : ParsedHttpSource(), ConfigurableSource {
         return chapters
     }
 
-    override fun chapterListSelector() =
-        """div#container a[href^="view.php?comic="]"""
+    override fun chapterListSelector() = """div#container a[href^="view.php?comic="]"""
 
     override fun chapterFromElement(element: Element): SChapter {
         val urlregex =

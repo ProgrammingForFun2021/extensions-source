@@ -32,19 +32,18 @@ abstract class MangabzTheme(
 
     override fun latestUpdatesParse(response: Response) = searchMangaParse(response)
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList) =
-        if (query.isEmpty()) {
-            popularMangaRequest(page)
-        } else {
-            val url = "$baseUrl/search".toHttpUrl().newBuilder()
-                .addQueryParameter("title", query)
-                .addQueryParameter("page", page.toString())
-            Request.Builder().url(url.build()).headers(headers).build()
-        }
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList) = if (query.isEmpty()) {
+        popularMangaRequest(page)
+    } else {
+        val url = "$baseUrl/search".toHttpUrl().newBuilder()
+            .addQueryParameter("title", query)
+            .addQueryParameter("page", page.toString())
+        Request.Builder().url(url.build()).headers(headers).build()
+    }
 
     override fun searchMangaParse(response: Response): MangasPage {
         val document = response.asJsoup().also(::parseFilters)
-        val mangas = document.selectFirst(Evaluator.Class("mh-list"))!!.children().map { element ->
+        val mangas = document.selectFirst(Evaluator.Class("mh-list"))?.children().orEmpty().map { element ->
             SManga.create().apply {
                 title = element.selectFirst(Evaluator.Tag("h2"))!!.text()
                 url = element.selectFirst(Evaluator.Tag("a"))!!.attr("href")
@@ -53,7 +52,7 @@ abstract class MangabzTheme(
         }
         val hasNextPage = document.run {
             val pagination = selectFirst(Evaluator.Class("page-pagination"))
-            pagination != null && pagination.select(Evaluator.Tag("a")).last()!!.text() == ">"
+            pagination != null && pagination.select(Evaluator.Tag("a")).last()?.text() == ">"
         }
         return MangasPage(mangas, hasNextPage)
     }
@@ -110,8 +109,7 @@ abstract class MangabzTheme(
         return list
     }
 
-    protected open fun getChapterElements(document: Document): Elements =
-        document.selectFirst(Evaluator.Id("chapterlistload"))!!.children()
+    protected open fun getChapterElements(document: Document): Elements = document.selectFirst(Evaluator.Id("chapterlistload"))!!.children()
 
     protected open val needPageCount = true
 

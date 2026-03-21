@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.zh.baimangu
 
-import android.app.Application
 import android.content.SharedPreferences
 import android.widget.Toast
 import eu.kanade.tachiyomi.network.GET
@@ -12,6 +11,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
+import keiyoushi.utils.getPreferencesLazy
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -19,19 +19,17 @@ import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.util.concurrent.TimeUnit
 
-class Baimangu : ConfigurableSource, ParsedHttpSource() {
+class Baimangu :
+    ParsedHttpSource(),
+    ConfigurableSource {
     override val lang = "zh"
     override val supportsLatest = true
     override val name = "百漫谷"
 
     // Preference setting
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences: SharedPreferences by getPreferencesLazy()
 
     override val baseUrl = preferences.getString(MAINSITE_URL_PREF, MAINSITE_URL_PREF_DEFAULT)!!
 
@@ -70,12 +68,10 @@ class Baimangu : ConfigurableSource, ParsedHttpSource() {
     }
 
     // Popular Manga
-    override fun popularMangaRequest(page: Int): Request {
-        return if (page <= 1) {
-            GET("$baseUrl/fenlei/4.html", headers)
-        } else {
-            GET("$baseUrl/fenlei/4-$page.html", headers)
-        }
+    override fun popularMangaRequest(page: Int): Request = if (page <= 1) {
+        GET("$baseUrl/fenlei/4.html", headers)
+    } else {
+        GET("$baseUrl/fenlei/4-$page.html", headers)
     }
     override fun popularMangaNextPageSelector() = commonNextPageSelector
     override fun popularMangaSelector() = commonSelector
@@ -92,16 +88,17 @@ class Baimangu : ConfigurableSource, ParsedHttpSource() {
     // 漫画更新 - 2
     // 更多漫画 - 3
     // 漫画大全 - 4
-    private class ChannelFilter : Filter.Select<String>(
-        "Channel",
-        arrayOf(
-            "最新漫画",
-            "漫画更新",
-            "更多漫画",
-            "漫画大全",
-        ),
-        3, // means 漫画大全 (4)
-    )
+    private class ChannelFilter :
+        Filter.Select<String>(
+            "Channel",
+            arrayOf(
+                "最新漫画",
+                "漫画更新",
+                "更多漫画",
+                "漫画大全",
+            ),
+            3, // means 漫画大全 (4)
+        )
 
     private class SortFilter : Filter.Select<String>("排序", arrayOf("按时间", "按人气", "按评分"), 0)
 
@@ -111,32 +108,32 @@ class Baimangu : ConfigurableSource, ParsedHttpSource() {
     )
 
     // Search
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        return if (query.isNotBlank()) {
-            GET("$baseUrl/vodsearch/$query----------$page---", headers)
-        } else {
-            var channelValue = "4" // 漫画大全
-            var sortValue = "time" // 按时间
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = if (query.isNotBlank()) {
+        GET("$baseUrl/vodsearch/$query----------$page---", headers)
+    } else {
+        var channelValue = "4" // 漫画大全
+        var sortValue = "time" // 按时间
 
-            filters.forEach { filter ->
-                when (filter) {
-                    is ChannelFilter -> {
-                        channelValue = arrayOf("1", "2", "3", "4")[filter.state]
-                    }
-                    is SortFilter -> {
-                        sortValue = arrayOf("time", "hits", "score")[filter.state]
-                    }
-                    else -> {}
+        filters.forEach { filter ->
+            when (filter) {
+                is ChannelFilter -> {
+                    channelValue = arrayOf("1", "2", "3", "4")[filter.state]
                 }
+
+                is SortFilter -> {
+                    sortValue = arrayOf("time", "hits", "score")[filter.state]
+                }
+
+                else -> {}
             }
-
-            // https://www.darpou.com/vodshow/2-----------.html
-            // https://www.darpou.com/vodshow/2--hits------3---.html
-
-            val url = "$baseUrl/vodshow/$channelValue--$sortValue------$page---"
-
-            GET(url, headers)
         }
+
+        // https://www.darpou.com/vodshow/2-----------.html
+        // https://www.darpou.com/vodshow/2--hits------3---.html
+
+        val url = "$baseUrl/vodshow/$channelValue--$sortValue------$page---"
+
+        GET(url, headers)
     }
 
     override fun searchMangaNextPageSelector() = commonNextPageSelector
@@ -180,16 +177,13 @@ class Baimangu : ConfigurableSource, ParsedHttpSource() {
 
     override fun chapterListSelector(): String = "div.fed-play-item ul.fed-part-rows:last-child a"
 
-    override fun chapterFromElement(element: Element): SChapter {
-        return SChapter.create().apply {
-            name = element.text().trim()
-            setUrlWithoutDomain(element.attr("href"))
-        }
+    override fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
+        name = element.text().trim()
+        setUrlWithoutDomain(element.attr("href"))
     }
 
     // Reverse the order of the chapter list
-    override fun chapterListParse(response: Response): List<SChapter> =
-        super.chapterListParse(response).reversed()
+    override fun chapterListParse(response: Response): List<SChapter> = super.chapterListParse(response).reversed()
 
     override fun imageUrlParse(document: Document) = ""
 

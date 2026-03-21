@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.all.akuma
 
-import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
@@ -16,6 +15,7 @@ import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.UpdateStrategy
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferencesLazy
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
@@ -25,8 +25,6 @@ import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.io.IOException
 import java.text.ParseException
 import java.text.SimpleDateFormat
@@ -36,7 +34,8 @@ import java.util.TimeZone
 class Akuma(
     override val lang: String,
     private val akumaLang: String,
-) : ConfigurableSource, ParsedHttpSource() {
+) : ParsedHttpSource(),
+    ConfigurableSource {
 
     override val name = "Akuma"
 
@@ -48,12 +47,12 @@ class Akuma(
 
     private var storedToken: String? = null
 
-    private val ddosGuardIntercept = DDosGuardInterceptor(network.client)
+    private val ddosGuardIntercept = DDosGuardInterceptor(network.cloudflareClient)
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ENGLISH).apply {
         timeZone = TimeZone.getTimeZone("UTC")
     }
-    override val client: OkHttpClient = network.client.newBuilder()
+    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
         .addInterceptor(ddosGuardIntercept)
         .addInterceptor(::tokenInterceptor)
         .rateLimit(2)
@@ -112,9 +111,7 @@ class Akuma(
         return storedToken!!
     }
 
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences: SharedPreferences by getPreferencesLazy()
 
     private val displayFullTitle: Boolean get() = preferences.getBoolean(PREF_TITLE, false)
 
@@ -157,7 +154,9 @@ class Akuma(
 
         if (document.text().contains("Max keywords of 3 exceeded.")) {
             throw Exception("Login required for more than 3 filters")
-        } else if (document.text().contains("Max keywords of 8 exceeded.")) throw Exception("Only max of 8 filters are allowed")
+        } else if (document.text().contains("Max keywords of 8 exceeded.")) {
+            throw Exception("Only max of 8 filters are allowed")
+        }
 
         val mangas = document.select(popularMangaSelector()).map { element ->
             popularMangaFromElement(element)
@@ -170,30 +169,26 @@ class Akuma(
         return MangasPage(mangas, !nextHash.isNullOrEmpty())
     }
 
-    override fun popularMangaFromElement(element: Element): SManga {
-        return SManga.create().apply {
-            setUrlWithoutDomain(element.select("a").attr("href"))
-            title = element.select(".overlay-title").text().replace("\"", "").let {
-                if (displayFullTitle) it.trim() else it.shortenTitle()
-            }
-            thumbnail_url = element.select("img").attr("abs:src")
+    override fun popularMangaFromElement(element: Element): SManga = SManga.create().apply {
+        setUrlWithoutDomain(element.select("a").attr("href"))
+        title = element.select(".overlay-title").text().replace("\"", "").let {
+            if (displayFullTitle) it.trim() else it.shortenTitle()
         }
+        thumbnail_url = element.select("img").attr("abs:src")
     }
 
     override fun fetchSearchManga(
         page: Int,
         query: String,
         filters: FilterList,
-    ): Observable<MangasPage> {
-        return if (query.startsWith(PREFIX_ID)) {
-            val url = "/g/${query.substringAfter(PREFIX_ID)}"
-            val manga = SManga.create().apply { this.url = url }
-            fetchMangaDetails(manga).map {
-                MangasPage(listOf(it.apply { this.url = url }), false)
-            }
-        } else {
-            super.fetchSearchManga(page, query, filters)
+    ): Observable<MangasPage> = if (query.startsWith(PREFIX_ID)) {
+        val url = "/g/${query.substringAfter(PREFIX_ID)}"
+        val manga = SManga.create().apply { this.url = url }
+        fetchMangaDetails(manga).map {
+            MangasPage(listOf(it.apply { this.url = url }), false)
         }
+    } else {
+        super.fetchSearchManga(page, query, filters)
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
@@ -215,9 +210,11 @@ class Akuma(
                         )
                     }
                 }
+
                 is OptionFilter -> {
                     if (filter.state > 0) finalQuery.add("opt:${filter.getValue()}")
                 }
+
                 is CategoryFilter -> {
                     filter.state.forEach {
                         when {
@@ -226,6 +223,7 @@ class Akuma(
                         }
                     }
                 }
+
                 else -> {}
             }
         }
@@ -322,9 +320,7 @@ class Akuma(
         return pageList
     }
 
-    override fun imageUrlParse(document: Document): String {
-        return document.select(".entry-content img").attr("abs:src")
-    }
+    override fun imageUrlParse(document: Document): String = document.select(".entry-content img").attr("abs:src")
 
     override fun getFilterList(): FilterList = getFilters()
 

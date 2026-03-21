@@ -1,11 +1,7 @@
 package eu.kanade.tachiyomi.extension.zh.jinmantiantang
 
-import android.content.SharedPreferences
+import android.util.Base64
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.lib.randomua.addRandomUAPreferenceToScreen
-import eu.kanade.tachiyomi.lib.randomua.getPrefCustomUA
-import eu.kanade.tachiyomi.lib.randomua.getPrefUAType
-import eu.kanade.tachiyomi.lib.randomua.setRandomUserAgent
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.asObservableSuccess
 import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
@@ -18,6 +14,10 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.randomua.addRandomUAPreference
+import keiyoushi.lib.randomua.setRandomUserAgent
+import keiyoushi.utils.getPreferences
+import keiyoushi.utils.tryParse
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -29,14 +29,15 @@ import rx.Observable
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
+class Jinmantiantang :
+    ParsedHttpSource(),
+    ConfigurableSource {
 
     override val lang: String = "zh"
     override val name: String = "禁漫天堂"
     override val supportsLatest: Boolean = true
 
-    private val preferences: SharedPreferences =
-        getSharedPreferences(id)
+    private val preferences = getPreferences { preferenceMigration() }
 
     override val baseUrl: String = "https://" + preferences.baseUrl
 
@@ -51,19 +52,19 @@ class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
             preferences.getString(MAINSITE_RATELIMIT_PREF, MAINSITE_RATELIMIT_PREF_DEFAULT)!!.toInt(),
             preferences.getString(MAINSITE_RATELIMIT_PERIOD, MAINSITE_RATELIMIT_PERIOD_DEFAULT)!!.toLong(),
         )
-        .setRandomUserAgent(preferences.getPrefUAType(), preferences.getPrefCustomUA())
         .apply { interceptors().add(0, updateUrlInterceptor) }
         .addInterceptor(ScrambledImageInterceptor).build()
 
+    // 添加额外的header增加规避Cloudflare可能性
+    override fun headersBuilder() = super.headersBuilder()
+        .set("Referer", "$baseUrl/")
+        .setRandomUserAgent()
+
     // 点击量排序(人气)
-    override fun popularMangaRequest(page: Int): Request {
-        return GET("$baseUrl/albums?o=mv&page=$page", headers)
-    }
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/albums?o=mv&page=$page", headers)
 
     override fun popularMangaNextPageSelector(): String = "a.prevnext"
-    override fun popularMangaSelector(): String {
-        return "div.list-col > div.p-b-15:not([data-group])"
-    }
+    override fun popularMangaSelector(): String = "div.list-col > div.p-b-15:not([data-group])"
 
     private fun List<SManga>.filterGenre(): List<SManga> {
         val removedGenres = preferences.getString(BLOCK_PREF, "")!!.substringBefore("//").trim()
@@ -91,9 +92,7 @@ class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
     }
 
     // 最新排序
-    override fun latestUpdatesRequest(page: Int): Request {
-        return GET("$baseUrl/albums?o=mr&page=$page", headers)
-    }
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/albums?o=mr&page=$page", headers)
 
     override fun latestUpdatesNextPageSelector(): String = popularMangaNextPageSelector()
     override fun latestUpdatesSelector(): String = popularMangaSelector()
@@ -113,15 +112,13 @@ class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
         return MangasPage(listOf(sManga), false)
     }
 
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return if (query.startsWith(PREFIX_ID_SEARCH_NO_COLON, true) || query.toIntOrNull() != null) {
-            val id = query.removePrefix(PREFIX_ID_SEARCH_NO_COLON).removePrefix(":")
-            client.newCall(searchMangaByIdRequest(id))
-                .asObservableSuccess()
-                .map { response -> searchMangaByIdParse(response, id) }
-        } else {
-            super.fetchSearchManga(page, query, filters)
-        }
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.startsWith(PREFIX_ID_SEARCH_NO_COLON, true) || query.toIntOrNull() != null) {
+        val id = query.removePrefix(PREFIX_ID_SEARCH_NO_COLON).removePrefix(":")
+        client.newCall(searchMangaByIdRequest(id))
+            .asObservableSuccess()
+            .map { response -> searchMangaByIdParse(response, id) }
+    } else {
+        super.fetchSearchManga(page, query, filters)
     }
 
     // 查询信息
@@ -163,6 +160,39 @@ class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
 
     // 漫画详情
 
+    private fun mangaDetailsResolve(response: Response): Document {
+        val document = response.asJsoup()
+        val scripts =
+            document.select("#wrapper > script:containsData(function base64DecodeUtf8):containsData(document.write(html))")
+
+        for (script in scripts) {
+            val jsCode = script.html().trim()
+
+            jsCode.lines().forEach { line ->
+                val trimmedLine = line.trim()
+                // html = base64DecodeUtf8("...")
+                if (trimmedLine.startsWith("const html") || trimmedLine.startsWith("let html") || trimmedLine.startsWith(
+                        "var html",
+                    )
+                ) {
+                    val start =
+                        trimmedLine.indexOf("base64DecodeUtf8(\"") + "base64DecodeUtf8(\"".length
+                    val end = trimmedLine.indexOf("\");", start)
+                    if (start > 0 && end > start) {
+                        val html = Base64.decode(trimmedLine.substring(start, end), Base64.DEFAULT)
+                        document.body().append(String(html))
+                    }
+                }
+            }
+        }
+        return document
+    }
+
+    override fun mangaDetailsParse(response: Response): SManga {
+        val document = mangaDetailsResolve(response)
+        return mangaDetailsParse(document)
+    }
+
     override fun mangaDetailsParse(document: Document): SManga = SManga.create().apply {
         title = document.selectFirst("h1")!!.text()
         // keep thumbnail_url same as the one in popularMangaFromElement()
@@ -176,13 +206,13 @@ class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
         description = document.selectFirst("#intro-block .p-t-5.p-b-5")!!.text().substringAfter("敘述：").trim()
     }
 
-    private fun Element.extractThumbnailUrl(): String {
-        return when {
-            hasAttr("data-original") -> attr("data-original")
-            hasAttr("src") -> attr("src")
-            hasAttr("data-cfsrc") -> attr("data-cfsrc")
-            else -> ""
-        }
+    override fun getMangaUrl(manga: SManga) = "$baseUrl${manga.url}"
+
+    private fun Element.extractThumbnailUrl(): String = when {
+        hasAttr("data-original") -> attr("data-original")
+        hasAttr("src") -> attr("src")
+        hasAttr("data-cfsrc") -> attr("data-cfsrc")
+        else -> ""
     }
 
     // 查询作者信息
@@ -208,9 +238,11 @@ class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
                 "連載中" -> {
                     status = "1"
                 }
+
                 "完結" -> {
                     status = "2"
                 }
+
                 else -> {
                     genre = "$genre$vote "
                 }
@@ -226,22 +258,21 @@ class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
     // 漫画章节信息
     override fun chapterListSelector(): String = "div[id=episode-block] a[href^=/photo/]"
 
-    private val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH)
+    private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH)
 
     override fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
         url = element.select("a").attr("href")
-        name = element.select("a li").first()!!.ownText()
-        date_upload = sdf.parse(element.select("a li span.hidden-xs").text().trim())?.time ?: 0
+        name = element.select("a li h3").first()!!.ownText()
+        date_upload = dateFormat.tryParse(element.select("a li span.hidden-xs").text().trim())
     }
 
     override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
+        val document = mangaDetailsResolve(response)
         if (document.select("div[id=episode-block] a li").size == 0) {
             val singleChapter = SChapter.create().apply {
                 name = "单章节"
-                url = document.select("a[class=col btn btn-primary dropdown-toggle reading]").attr("href")
-                date_upload = sdf.parse(document.select("[itemprop=datePublished]").last()!!.attr("content"))?.time
-                    ?: 0
+                url = document.select("#album_photo_cover > div.thumb-overlay > a").attr("href")
+                date_upload = dateFormat.tryParse(document.select("[itemprop=datePublished]").last()!!.attr("content"))
             }
             return listOf(singleChapter)
         }
@@ -251,13 +282,15 @@ class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
     // 漫画图片信息
     override fun pageListParse(document: Document): List<Page> {
         tailrec fun internalParse(document: Document, pages: MutableList<Page>): List<Page> {
-            val elements = document.select("div[class=center scramble-page][id*=0]")
+            val elements = document.select("div[class=center scramble-page spnotice_chk][id*=0]")
             for (element in elements) {
                 pages.apply {
-                    if (element.select("div[class=center scramble-page][id*=0] img").attr("src").indexOf("blank.jpg") >= 0) {
-                        add(Page(size, "", element.select("div[class=center scramble-page][id*=0] img").attr("data-original").split("\\?")[0]))
+                    if (element.select("div[class=center scramble-page spnotice_chk][id*=0] img").attr("src").indexOf("blank.jpg") >= 0 ||
+                        element.select("div[class=center scramble-page spnotice_chk][id*=0] img").attr("data-cfsrc").indexOf("blank.jpg") >= 0
+                    ) {
+                        add(Page(size, "", element.select("div[class=center scramble-page spnotice_chk][id*=0] img").attr("data-original").split("\\?")[0]))
                     } else {
-                        add(Page(size, "", element.select("div[class=center scramble-page][id*=0] img").attr("src").split("\\?")[0]))
+                        add(Page(size, "", element.select("div[class=center scramble-page spnotice_chk][id*=0] img").attr("src").split("\\?")[0]))
                     }
                 }
             }
@@ -279,106 +312,122 @@ class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
         CategoryGroup(),
         SortFilter(),
         TimeFilter(),
+        TypeFilter(),
     )
 
-    private class CategoryGroup : UriPartFilter(
-        "按类型",
-        arrayOf(
-            Pair("全部", "/albums?"),
-            Pair("其他", "/albums/another?"),
-            Pair("同人", "/albums/doujin?"),
-            Pair("韩漫", "/albums/hanman?"),
-            Pair("美漫", "/albums/meiman?"),
-            Pair("短篇", "/albums/short?"),
-            Pair("单本", "/albums/single?"),
-            Pair("汉化", "/albums/doujin/sub/chinese?"),
-            Pair("日语", "/albums/doujin/sub/japanese?"),
-            Pair("汉化", "/albums/doujin/sub/chinese?"),
-            Pair("Cosplay", "/albums/doujin/sub/cosplay?"),
-            Pair("CG图集", "/albums/doujin/sub/CG?"),
+    private class CategoryGroup :
+        UriPartFilter(
+            "按类型",
+            arrayOf(
+                Pair("全部", "/albums?"),
+                Pair("其他", "/albums/another?"),
+                Pair("同人", "/albums/doujin?"),
+                Pair("韩漫", "/albums/hanman?"),
+                Pair("美漫", "/albums/meiman?"),
+                Pair("短篇", "/albums/short?"),
+                Pair("单本", "/albums/single?"),
+                Pair("汉化", "/albums/doujin/sub/chinese?"),
+                Pair("日语", "/albums/doujin/sub/japanese?"),
+                Pair("汉化", "/albums/doujin/sub/chinese?"),
+                Pair("Cosplay", "/albums/doujin/sub/cosplay?"),
+                Pair("CG图集", "/albums/doujin/sub/CG?"),
 
-            Pair("P站", "/search/photos?search_query=PIXIV&"),
-            Pair("3D", "/search/photos?search_query=3D&"),
+                Pair("P站", "/search/photos?search_query=PIXIV&"),
+                Pair("3D", "/search/photos?search_query=3D&"),
 
-            Pair("剧情", "/search/photos?search_query=劇情&"),
-            Pair("校园", "/search/photos?search_query=校園&"),
-            Pair("纯爱", "/search/photos?search_query=純愛&"),
-            Pair("人妻", "/search/photos?search_query=人妻&"),
-            Pair("师生", "/search/photos?search_query=師生&"),
-            Pair("乱伦", "/search/photos?search_query=亂倫&"),
-            Pair("近亲", "/search/photos?search_query=近親&"),
-            Pair("百合", "/search/photos?search_query=百合&"),
-            Pair("男同", "/search/photos?search_query=YAOI&"),
-            Pair("性转", "/search/photos?search_query=性轉&"),
-            Pair("NTR", "/search/photos?search_query=NTR&"),
-            Pair("伪娘", "/search/photos?search_query=偽娘&"),
-            Pair("痴女", "/search/photos?search_query=癡女&"),
-            Pair("全彩", "/search/photos?search_query=全彩&"),
-            Pair("女性向", "/search/photos?search_query=女性向&"),
+                Pair("剧情", "/search/photos?search_query=劇情&"),
+                Pair("校园", "/search/photos?search_query=校園&"),
+                Pair("纯爱", "/search/photos?search_query=純愛&"),
+                Pair("人妻", "/search/photos?search_query=人妻&"),
+                Pair("师生", "/search/photos?search_query=師生&"),
+                Pair("乱伦", "/search/photos?search_query=亂倫&"),
+                Pair("近亲", "/search/photos?search_query=近親&"),
+                Pair("百合", "/search/photos?search_query=百合&"),
+                Pair("男同", "/search/photos?search_query=YAOI&"),
+                Pair("性转", "/search/photos?search_query=性轉&"),
+                Pair("NTR", "/search/photos?search_query=NTR&"),
+                Pair("伪娘", "/search/photos?search_query=偽娘&"),
+                Pair("痴女", "/search/photos?search_query=癡女&"),
+                Pair("全彩", "/search/photos?search_query=全彩&"),
+                Pair("女性向", "/search/photos?search_query=女性向&"),
 
-            Pair("萝莉", "/search/photos?search_query=蘿莉&"),
-            Pair("御姐", "/search/photos?search_query=御姐&"),
-            Pair("熟女", "/search/photos?search_query=熟女&"),
-            Pair("正太", "/search/photos?search_query=正太&"),
-            Pair("巨乳", "/search/photos?search_query=巨乳&"),
-            Pair("贫乳", "/search/photos?search_query=貧乳&"),
-            Pair("女王", "/search/photos?search_query=女王&"),
-            Pair("教师", "/search/photos?search_query=教師&"),
-            Pair("女仆", "/search/photos?search_query=女僕&"),
-            Pair("护士", "/search/photos?search_query=護士&"),
-            Pair("泳裝", "/search/photos?search_query=泳裝&"),
-            Pair("眼镜", "/search/photos?search_query=眼鏡&"),
-            Pair("丝袜", "/search/photos?search_query=絲襪&"),
-            Pair("连裤袜", "/search/photos?search_query=連褲襪&"),
-            Pair("制服", "/search/photos?search_query=制服&"),
-            Pair("兔女郎", "/search/photos?search_query=兔女郎&"),
+                Pair("萝莉", "/search/photos?search_query=蘿莉&"),
+                Pair("御姐", "/search/photos?search_query=御姐&"),
+                Pair("熟女", "/search/photos?search_query=熟女&"),
+                Pair("正太", "/search/photos?search_query=正太&"),
+                Pair("巨乳", "/search/photos?search_query=巨乳&"),
+                Pair("贫乳", "/search/photos?search_query=貧乳&"),
+                Pair("女王", "/search/photos?search_query=女王&"),
+                Pair("教师", "/search/photos?search_query=教師&"),
+                Pair("女仆", "/search/photos?search_query=女僕&"),
+                Pair("护士", "/search/photos?search_query=護士&"),
+                Pair("泳裝", "/search/photos?search_query=泳裝&"),
+                Pair("眼镜", "/search/photos?search_query=眼鏡&"),
+                Pair("丝袜", "/search/photos?search_query=絲襪&"),
+                Pair("连裤袜", "/search/photos?search_query=連褲襪&"),
+                Pair("制服", "/search/photos?search_query=制服&"),
+                Pair("兔女郎", "/search/photos?search_query=兔女郎&"),
 
-            Pair("群交", "/search/photos?search_query=群交&"),
-            Pair("足交", "/search/photos?search_query=足交&"),
-            Pair("SM", "/search/photos?search_query=SM&"),
-            Pair("肛交", "/search/photos?search_query=肛交&"),
-            Pair("阿黑颜", "/search/photos?search_query=阿黑顏&"),
-            Pair("药物", "/search/photos?search_query=藥物&"),
-            Pair("扶他", "/search/photos?search_query=扶他&"),
-            Pair("调教", "/search/photos?search_query=調教&"),
-            Pair("野外", "/search/photos?search_query=野外&"),
-            Pair("露出", "/search/photos?search_query=露出&"),
-            Pair("催眠", "/search/photos?search_query=催眠&"),
-            Pair("自慰", "/search/photos?search_query=自慰&"),
-            Pair("触手", "/search/photos?search_query=觸手&"),
-            Pair("兽交", "/search/photos?search_query=獸交&"),
-            Pair("亚人", "/search/photos?search_query=亞人&"),
-            Pair("魔物", "/search/photos?search_query=魔物&"),
+                Pair("群交", "/search/photos?search_query=群交&"),
+                Pair("足交", "/search/photos?search_query=足交&"),
+                Pair("SM", "/search/photos?search_query=SM&"),
+                Pair("肛交", "/search/photos?search_query=肛交&"),
+                Pair("阿黑颜", "/search/photos?search_query=阿黑顏&"),
+                Pair("药物", "/search/photos?search_query=藥物&"),
+                Pair("扶他", "/search/photos?search_query=扶他&"),
+                Pair("调教", "/search/photos?search_query=調教&"),
+                Pair("野外", "/search/photos?search_query=野外&"),
+                Pair("露出", "/search/photos?search_query=露出&"),
+                Pair("催眠", "/search/photos?search_query=催眠&"),
+                Pair("自慰", "/search/photos?search_query=自慰&"),
+                Pair("触手", "/search/photos?search_query=觸手&"),
+                Pair("兽交", "/search/photos?search_query=獸交&"),
+                Pair("亚人", "/search/photos?search_query=亞人&"),
+                Pair("魔物", "/search/photos?search_query=魔物&"),
 
-            Pair("CG集", "/search/photos?search_query=CG集&"),
-            Pair("重口", "/search/photos?search_query=重口&"),
-            Pair("猎奇", "/search/photos?search_query=獵奇&"),
-            Pair("非H", "/search/photos?search_query=非H&"),
-            Pair("血腥", "/search/photos?search_query=血腥&"),
-            Pair("暴力", "/search/photos?search_query=暴力&"),
-            Pair("血腥暴力", "/search/photos?search_query=血腥暴力&"),
-        ),
-    )
+                Pair("CG集", "/search/photos?search_query=CG集&"),
+                Pair("重口", "/search/photos?search_query=重口&"),
+                Pair("猎奇", "/search/photos?search_query=獵奇&"),
+                Pair("非H", "/search/photos?search_query=非H&"),
+                Pair("血腥", "/search/photos?search_query=血腥&"),
+                Pair("暴力", "/search/photos?search_query=暴力&"),
+                Pair("血腥暴力", "/search/photos?search_query=血腥暴力&"),
+            ),
+        )
 
-    private class SortFilter : UriPartFilter(
-        "排序",
-        arrayOf(
-            Pair("最新", "o=mr&"),
-            Pair("最多浏览", "o=mv&"),
-            Pair("最多爱心", "o=tf&"),
-            Pair("最多图片", "o=mp&"),
-        ),
-    )
+    private class SortFilter :
+        UriPartFilter(
+            "排序",
+            arrayOf(
+                Pair("最新", "o=mr&"),
+                Pair("最多浏览", "o=mv&"),
+                Pair("最多爱心", "o=tf&"),
+                Pair("最多图片", "o=mp&"),
+            ),
+        )
 
-    private class TimeFilter : UriPartFilter(
-        "时间",
-        arrayOf(
-            Pair("全部", "t=a"),
-            Pair("今天", "t=t"),
-            Pair("这周", "t=w"),
-            Pair("本月", "t=m"),
-        ),
-    )
+    private class TimeFilter :
+        UriPartFilter(
+            "时间",
+            arrayOf(
+                Pair("全部", "t=a&"),
+                Pair("今天", "t=t&"),
+                Pair("这周", "t=w&"),
+                Pair("本月", "t=m&"),
+            ),
+        )
+
+    private class TypeFilter :
+        UriPartFilter(
+            "搜索范围",
+            arrayOf(
+                Pair("站内搜索", "main_tag=0"),
+                Pair("作品", "main_tag=1"),
+                Pair("作者", "main_tag=2"),
+                Pair("标签", "main_tag=3"),
+                Pair("登场人物", "main_tag=4"),
+            ),
+        )
 
     /**
      *创建选择过滤器的类。 下拉菜单中的每个条目都有一个名称和一个显示名称。
@@ -390,14 +439,13 @@ class Jinmantiantang : ParsedHttpSource(), ConfigurableSource {
         displayName: String,
         val vals: Array<Pair<String, String>>,
         defaultValue: Int = 0,
-    ) :
-        Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray(), defaultValue) {
+    ) : Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray(), defaultValue) {
         open fun toUriPart() = vals[state].second
     }
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         getPreferenceList(screen.context, preferences, updateUrlInterceptor.isUpdated).forEach(screen::addPreference)
-        addRandomUAPreferenceToScreen(screen)
+        screen.addRandomUAPreference()
     }
     companion object {
         private const val PREFIX_ID_SEARCH_NO_COLON = "JM"

@@ -2,10 +2,10 @@ package eu.kanade.tachiyomi.multisrc.iken
 
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
+import keiyoushi.utils.tryParse
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonPrimitive
 import org.jsoup.Jsoup
-import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -93,32 +93,49 @@ class Chapter(
     private val id: Int,
     private val slug: String,
     private val number: JsonPrimitive,
-    private val createdBy: Name,
     private val createdAt: String,
     private val chapterStatus: String,
     private val isAccessible: Boolean,
-    private val mangaPost: ChapterPostDetails,
+    private val isLocked: Boolean? = false,
+    private val isTimeLocked: Boolean? = false,
+    private val mangaPost: ChapterPostDetails? = null,
 ) {
     fun isPublic() = chapterStatus == "PUBLIC"
 
     fun isAccessible() = isAccessible
 
+    fun isLocked() = (isLocked == true) || (isTimeLocked == true)
+
     fun toSChapter(mangaSlug: String?) = SChapter.create().apply {
-        val seriesSlug = mangaSlug ?: mangaPost.slug
+        val prefix = if (!isAccessible()) "🔒 " else ""
+        val seriesSlug = (mangaSlug ?: mangaPost?.slug)!!
         url = "/series/$seriesSlug/$slug#$id"
-        name = "Chapter $number"
-        scanlator = createdBy.name
-        date_upload = try {
-            dateFormat.parse(createdAt)!!.time
-        } catch (_: ParseException) {
-            0L
-        }
+        name = "${prefix}Chapter $number"
+        date_upload = dateFormat.tryParse(createdAt)
     }
 }
 
 @Serializable
 class ChapterPostDetails(
-    val slug: String,
+    val slug: String?,
+)
+
+@Serializable
+class PageParseDto(
+    val url: String,
+    val order: Int? = null,
+)
+
+@Serializable
+class Images(
+    val images: List<PageParseDto>,
+    val id: Int? = null,
+)
+
+@Serializable
+class ViewQuery(
+    val postId: Int?,
+    val chapterId: Int?,
 )
 
 private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ENGLISH)

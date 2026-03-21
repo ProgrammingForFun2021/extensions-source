@@ -1,7 +1,6 @@
 package eu.kanade.tachiyomi.extension.ru.henchan
 
 import android.annotation.SuppressLint
-import android.app.Application
 import android.content.SharedPreferences
 import android.widget.Toast
 import androidx.preference.EditTextPreference
@@ -15,36 +14,42 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferencesLazy
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class HenChan : MultiChan("HenChan", "https://xxxxx.hentaichan.live", "ru"), ConfigurableSource {
+class HenChan :
+    MultiChan("HenChan", "https://xxl.hentaichan.live", "ru"),
+    ConfigurableSource {
 
     override val id = 5504588601186153612
 
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences: SharedPreferences by getPreferencesLazy()
 
     private val domain = preferences.getString(DOMAIN_TITLE, DOMAIN_DEFAULT)!!
 
     override val baseUrl = domain
 
-    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/manga/newest?offset=${20 * (page - 1)}")
+    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/manga/newest?offset=${20 * (page - 1)}", headers)
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val url = if (query.isNotEmpty()) {
-            "$baseUrl/?do=search&subaction=search&story=$query&search_start=$page"
+            baseUrl.toHttpUrl().newBuilder()
+                .addQueryParameter("do", "search")
+                .addQueryParameter("subaction", "search")
+                .addQueryParameter("story", query)
+                .addQueryParameter("search_start", page.toString())
+                .build()
+                .toString()
         } else {
             var genres = ""
             var order = ""
@@ -120,31 +125,29 @@ class HenChan : MultiChan("HenChan", "https://xxxxx.hentaichan.live", "ru"), Con
         return manga
     }
 
-    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
-        return client.newCall(chapterListRequest(manga))
-            .asObservable().doOnNext { response ->
-                if (!response.isSuccessful) {
-                    response.close()
-                    // Error message for exceeding last page
-                    if (response.code == 404) {
-                        Observable.just(
-                            listOf(
-                                SChapter.create().apply {
-                                    url = manga.url
-                                    name = "Chapter"
-                                    chapter_number = 1f
-                                },
-                            ),
-                        )
-                    } else {
-                        throw Exception("HTTP error ${response.code}")
-                    }
+    override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> = client.newCall(chapterListRequest(manga))
+        .asObservable().doOnNext { response ->
+            if (!response.isSuccessful) {
+                response.close()
+                // Error message for exceeding last page
+                if (response.code == 404) {
+                    Observable.just(
+                        listOf(
+                            SChapter.create().apply {
+                                url = manga.url
+                                name = "Chapter"
+                                chapter_number = 1f
+                            },
+                        ),
+                    )
+                } else {
+                    throw Exception("HTTP error ${response.code}")
                 }
             }
-            .map { response ->
-                chapterListParse(response)
-            }
-    }
+        }
+        .map { response ->
+            chapterListParse(response)
+        }
 
     override fun chapterListRequest(manga: SManga): Request {
         val url = baseUrl + if (manga.thumbnail_url?.endsWith("#") == true) {
@@ -257,29 +260,27 @@ class HenChan : MultiChan("HenChan", "https://xxxxx.hentaichan.live", "ru"), Con
     ) : Filter.TriState(name)
 
     private class GenreList(genres: List<Genre>) : Filter.Group<Genre>("Тэги", genres)
-    private class OrderBy : UriPartFilter(
-        "Сортировка",
-        arrayOf("Дата", "Популярность", "Алфавит"),
-        arrayOf("&n=dateasc" to "", "&n=favasc" to "&n=favdesc", "&n=abcdesc" to "&n=abcasc"),
-        arrayOf(
-            "manga/new&n=dateasc" to "manga/new",
-            "manga/new&n=favasc" to "mostfavorites&sort=manga",
-            "manga/new&n=abcdesc" to "manga/new&n=abcasc",
-        ),
-    )
+    private class OrderBy :
+        UriPartFilter(
+            "Сортировка",
+            arrayOf("Дата", "Популярность", "Алфавит"),
+            arrayOf("&n=dateasc" to "", "&n=favasc" to "&n=favdesc", "&n=abcdesc" to "&n=abcasc"),
+            arrayOf(
+                "manga/new&n=dateasc" to "manga/new",
+                "manga/new&n=favasc" to "mostfavorites&sort=manga",
+                "manga/new&n=abcdesc" to "manga/new&n=abcasc",
+            ),
+        )
 
     private open class UriPartFilter(
         displayName: String,
         sortNames: Array<String>,
         val withGenres: Array<Pair<String, String>>,
         val withoutGenres: Array<Pair<String, String>>,
-    ) :
-        Filter.Sort(displayName, sortNames, Selection(1, false)) {
-        fun toUriPartWithGenres() =
-            if (state!!.ascending) withGenres[state!!.index].first else withGenres[state!!.index].second
+    ) : Filter.Sort(displayName, sortNames, Selection(1, false)) {
+        fun toUriPartWithGenres() = if (state!!.ascending) withGenres[state!!.index].first else withGenres[state!!.index].second
 
-        fun toUriPartWithoutGenres() =
-            if (state!!.ascending) withoutGenres[state!!.index].first else withoutGenres[state!!.index].second
+        fun toUriPartWithoutGenres() = if (state!!.ascending) withoutGenres[state!!.index].first else withoutGenres[state!!.index].second
     }
 
     override fun getFilterList() = FilterList(
@@ -501,6 +502,6 @@ class HenChan : MultiChan("HenChan", "https://xxxxx.hentaichan.live", "ru"), Con
 
     companion object {
         private const val DOMAIN_TITLE = "Домен"
-        private const val DOMAIN_DEFAULT = "https://xxxxx.hentaichan.live"
+        private const val DOMAIN_DEFAULT = "https://xxl.hentaichan.live"
     }
 }

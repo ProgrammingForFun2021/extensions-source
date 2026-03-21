@@ -1,9 +1,0 @@
-ext {
-    extName = 'Quantum Scans'
-    extClass = '.QuantumScans'
-    themePkg = 'keyoapp'
-    baseUrl = 'https://quantumscans.org'
-    overrideVersionCode = 23
-}
-
-apply from: "$rootDir/common.gradle"

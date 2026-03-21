@@ -1,8 +1,6 @@
 package eu.kanade.tachiyomi.multisrc.madara
 
 import android.util.Base64
-import eu.kanade.tachiyomi.lib.cryptoaes.CryptoAES
-import eu.kanade.tachiyomi.lib.i18n.Intl
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.asObservableSuccess
@@ -14,6 +12,8 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.cryptoaes.CryptoAES
+import keiyoushi.lib.i18n.Intl
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -38,7 +38,7 @@ abstract class Madara(
     override val name: String,
     override val baseUrl: String,
     final override val lang: String,
-    private val dateFormat: SimpleDateFormat = SimpleDateFormat("MMMM dd, yyyy", Locale.US),
+    protected val dateFormat: SimpleDateFormat = SimpleDateFormat("MMMM dd, yyyy", Locale.US),
 ) : ParsedHttpSource() {
 
     override val supportsLatest = true
@@ -82,7 +82,12 @@ abstract class Madara(
     /**
      * Automatically fetched genres from the source to be used in the filters.
      */
-    private var genresList: List<Genre> = emptyList()
+    protected open var genresList: List<Genre> = emptyList()
+
+    /**
+     * Whether genres have been fetched
+     */
+    private var genresFetched: Boolean = false
 
     /**
      * Inner variable to control how much tries the genres request was called.
@@ -109,7 +114,9 @@ abstract class Madara(
     protected open val useLoadMoreRequest = LoadMoreStrategy.AutoDetect
 
     enum class LoadMoreStrategy {
-        AutoDetect, Always, Never
+        AutoDetect,
+        Always,
+        Never,
     }
 
     /**
@@ -118,7 +125,9 @@ abstract class Madara(
     private var loadMoreRequestDetected = LoadMoreDetection.Pending
 
     private enum class LoadMoreDetection {
-        Pending, True, False
+        Pending,
+        True,
+        False,
     }
 
     protected fun detectLoadMore(document: Document) {
@@ -132,12 +141,10 @@ abstract class Madara(
         }
     }
 
-    protected fun useLoadMoreRequest(): Boolean {
-        return when (useLoadMoreRequest) {
-            LoadMoreStrategy.Always -> true
-            LoadMoreStrategy.Never -> false
-            else -> loadMoreRequestDetected == LoadMoreDetection.True
-        }
+    protected fun useLoadMoreRequest(): Boolean = when (useLoadMoreRequest) {
+        LoadMoreStrategy.Always -> true
+        LoadMoreStrategy.Never -> false
+        else -> loadMoreRequestDetected == LoadMoreDetection.True
     }
 
     // Popular Manga
@@ -155,9 +162,10 @@ abstract class Madara(
     }
 
     // exclude/filter bilibili manga from list
-    override fun popularMangaSelector() = "div.page-item-detail:not(:has(a[href*='bilibilicomics.com']))$mangaEntrySelector"
+    override fun popularMangaSelector() = "div.page-item-detail:not(:has(a[href*='bilibilicomics.com']))$mangaEntrySelector , .manga__item"
 
     open val popularMangaUrlSelector = "div.post-title a"
+    open val popularMangaUrlSelectorImg = "img"
 
     override fun popularMangaFromElement(element: Element): SManga {
         val manga = SManga.create()
@@ -168,27 +176,25 @@ abstract class Madara(
                 manga.title = it.ownText()
             }
 
-            selectFirst("img")?.let {
-                manga.thumbnail_url = imageFromElement(it)
+            selectFirst(popularMangaUrlSelectorImg)?.let {
+                manga.thumbnail_url = processThumbnail(imageFromElement(it), true)
             }
         }
 
         return manga
     }
 
-    override fun popularMangaRequest(page: Int): Request =
-        if (useLoadMoreRequest()) {
-            loadMoreRequest(page, popular = true)
-        } else {
-            GET("$baseUrl/$mangaSubString/${searchPage(page)}?m_orderby=views", headers)
-        }
+    override fun popularMangaRequest(page: Int): Request = if (useLoadMoreRequest()) {
+        loadMoreRequest(page, popular = true)
+    } else {
+        GET("$baseUrl/$mangaSubString/${searchPage(page)}?m_orderby=views", headers)
+    }
 
-    override fun popularMangaNextPageSelector(): String? =
-        if (useLoadMoreRequest()) {
-            "body:not(:has(.no-posts))"
-        } else {
-            "div.nav-previous, nav.navigation-ajax, a.nextpostslink"
-        }
+    override fun popularMangaNextPageSelector(): String? = if (useLoadMoreRequest()) {
+        "body:not(:has(.no-posts))"
+    } else {
+        "div.nav-previous, nav.navigation-ajax, a.nextpostslink"
+    }
 
     // Latest Updates
 
@@ -199,12 +205,11 @@ abstract class Madara(
         return popularMangaFromElement(element)
     }
 
-    override fun latestUpdatesRequest(page: Int): Request =
-        if (useLoadMoreRequest()) {
-            loadMoreRequest(page, popular = false)
-        } else {
-            GET("$baseUrl/$mangaSubString/${searchPage(page)}?m_orderby=latest", headers)
-        }
+    override fun latestUpdatesRequest(page: Int): Request = if (useLoadMoreRequest()) {
+        loadMoreRequest(page, popular = false)
+    } else {
+        GET("$baseUrl/$mangaSubString/${searchPage(page)}?m_orderby=latest", headers)
+    }
 
     override fun latestUpdatesNextPageSelector(): String? = popularMangaNextPageSelector()
 
@@ -237,11 +242,16 @@ abstract class Madara(
 
     override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
         if (query.startsWith(URL_SEARCH_PREFIX)) {
-            val mangaUrl = "/$mangaSubString/${query.substringAfter(URL_SEARCH_PREFIX)}/"
-            return client.newCall(GET("$baseUrl$mangaUrl", headers))
+            val mangaUrl = baseUrl.toHttpUrl().newBuilder().apply {
+                addPathSegment(mangaSubString)
+                addPathSegment(query.substringAfter(URL_SEARCH_PREFIX))
+                addPathSegment("") // add trailing slash
+            }.build()
+            return client.newCall(GET(mangaUrl, headers))
                 .asObservableSuccess().map { response ->
                     val manga = mangaDetailsParse(response).apply {
-                        url = mangaUrl
+                        setUrlWithoutDomain(mangaUrl.toString())
+                        initialized = true
                     }
 
                     MangasPage(listOf(manga), false)
@@ -251,20 +261,16 @@ abstract class Madara(
         return super.fetchSearchManga(page, query, filters)
     }
 
-    protected open fun searchPage(page: Int): String {
-        return if (page == 1) {
-            ""
-        } else {
-            "page/$page/"
-        }
+    protected open fun searchPage(page: Int): String = if (page == 1) {
+        ""
+    } else {
+        "page/$page/"
     }
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        return if (useLoadMoreRequest()) {
-            searchLoadMoreRequest(page, query, filters)
-        } else {
-            searchRequest(page, query, filters)
-        }
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = if (useLoadMoreRequest()) {
+        searchLoadMoreRequest(page, query, filters)
+    } else {
+        searchRequest(page, query, filters)
     }
 
     protected open fun searchRequest(page: Int, query: String, filters: FilterList): Request {
@@ -278,16 +284,19 @@ abstract class Madara(
                         url.addQueryParameter("author", filter.state)
                     }
                 }
+
                 is ArtistFilter -> {
                     if (filter.state.isNotBlank()) {
                         url.addQueryParameter("artist", filter.state)
                     }
                 }
+
                 is YearFilter -> {
                     if (filter.state.isNotBlank()) {
                         url.addQueryParameter("release", filter.state)
                     }
                 }
+
                 is StatusFilter -> {
                     filter.state.forEach {
                         if (it.state) {
@@ -295,24 +304,31 @@ abstract class Madara(
                         }
                     }
                 }
+
                 is OrderByFilter -> {
                     if (filter.state != 0) {
                         url.addQueryParameter("m_orderby", filter.toUriPart())
                     }
                 }
+
                 is AdultContentFilter -> {
                     url.addQueryParameter("adult", filter.toUriPart())
                 }
+
                 is GenreConditionFilter -> {
                     url.addQueryParameter("op", filter.toUriPart())
                 }
+
                 is GenreList -> {
                     filter.state
                         .filter { it.state }
                         .let { list ->
-                            if (list.isNotEmpty()) { list.forEach { genre -> url.addQueryParameter("genre[]", genre.id) } }
+                            if (list.isNotEmpty()) {
+                                list.forEach { genre -> url.addQueryParameter("genre[]", genre.id) }
+                            }
                         }
                 }
+
                 else -> {}
             }
         }
@@ -356,6 +372,7 @@ abstract class Madara(
                             taxQueryIdx++
                         }
                     }
+
                     is ArtistFilter -> {
                         if (filter.state.isNotBlank()) {
                             add("vars[tax_query][$taxQueryIdx][taxonomy]", "wp-manga-artist")
@@ -365,6 +382,7 @@ abstract class Madara(
                             taxQueryIdx++
                         }
                     }
+
                     is YearFilter -> {
                         if (filter.state.isNotBlank()) {
                             add("vars[tax_query][$taxQueryIdx][taxonomy]", "wp-manga-release")
@@ -374,6 +392,7 @@ abstract class Madara(
                             taxQueryIdx++
                         }
                     }
+
                     is StatusFilter -> {
                         val statuses = filter.state
                             .filter { it.state }
@@ -389,6 +408,7 @@ abstract class Madara(
                             metaQueryIdx++
                         }
                     }
+
                     is OrderByFilter -> {
                         if (filter.state != 0) {
                             when (filter.toUriPart()) {
@@ -397,24 +417,29 @@ abstract class Madara(
                                     add("vars[order]", "DESC")
                                     add("vars[meta_key]", "_latest_update")
                                 }
+
                                 "alphabet" -> {
                                     add("vars[orderby]", "post_title")
                                     add("vars[order]", "ASC")
                                 }
+
                                 "rating" -> {
                                     add("vars[orderby][query_average_reviews]", "DESC")
                                     add("vars[orderby][query_total_reviews]", "DESC")
                                 }
+
                                 "trending" -> {
                                     add("vars[orderby]", "meta_value_num")
                                     add("vars[meta_key]", "_wp_manga_week_views_value")
                                     add("vars[order]", "DESC")
                                 }
+
                                 "views" -> {
                                     add("vars[orderby]", "meta_value_num")
                                     add("vars[meta_key]", "_wp_manga_views")
                                     add("vars[order]", "DESC")
                                 }
+
                                 else -> {
                                     add("vars[orderby]", "date")
                                     add("vars[order]", "DESC")
@@ -422,6 +447,7 @@ abstract class Madara(
                             }
                         }
                     }
+
                     is AdultContentFilter -> {
                         if (filter.state != 0) {
                             add("vars[meta_query][$metaQueryIdx][key]", "manga_adult_content")
@@ -433,11 +459,13 @@ abstract class Madara(
                             metaQueryIdx++
                         }
                     }
+
                     is GenreConditionFilter -> {
                         if (filter.state == 1 && genres.isNotEmpty()) {
                             add("vars[tax_query][$taxQueryIdx][operation]", "AND")
                         }
                     }
+
                     is GenreList -> {
                         if (genres.isNotEmpty()) {
                             add("vars[tax_query][$taxQueryIdx][taxonomy]", "wp-manga-genre")
@@ -450,6 +478,7 @@ abstract class Madara(
                             taxQueryIdx++
                         }
                     }
+
                     else -> {}
                 }
             }
@@ -489,8 +518,7 @@ abstract class Madara(
             intl["adult_content_filter_only"] to "1",
         )
 
-    open class UriPartFilter(displayName: String, private val vals: Array<Pair<String, String>>, state: Int = 0) :
-        Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray(), state) {
+    open class UriPartFilter(displayName: String, private val vals: Array<Pair<String, String>>, state: Int = 0) : Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray(), state) {
         fun toUriPart() = vals[state].second
     }
 
@@ -499,21 +527,21 @@ abstract class Madara(
     protected class AuthorFilter(title: String) : Filter.Text(title)
     protected class ArtistFilter(title: String) : Filter.Text(title)
     protected class YearFilter(title: String) : Filter.Text(title)
-    protected class StatusFilter(title: String, status: List<Tag>) :
-        Filter.Group<Tag>(title, status)
+    protected class StatusFilter(title: String, status: List<Tag>) : Filter.Group<Tag>(title, status)
 
-    protected class OrderByFilter(title: String, options: List<Pair<String, String>>, state: Int = 0) :
-        UriPartFilter(title, options.toTypedArray(), state)
+    protected class OrderByFilter(title: String, options: List<Pair<String, String>>, state: Int = 0) : UriPartFilter(title, options.toTypedArray(), state)
 
-    protected class GenreConditionFilter(title: String, options: List<Pair<String, String>>) : UriPartFilter(
-        title,
-        options.toTypedArray(),
-    )
+    protected class GenreConditionFilter(title: String, options: List<Pair<String, String>>) :
+        UriPartFilter(
+            title,
+            options.toTypedArray(),
+        )
 
-    protected class AdultContentFilter(title: String, options: List<Pair<String, String>>) : UriPartFilter(
-        title,
-        options.toTypedArray(),
-    )
+    protected class AdultContentFilter(title: String, options: List<Pair<String, String>>) :
+        UriPartFilter(
+            title,
+            options.toTypedArray(),
+        )
 
     protected class GenreList(title: String, genres: List<Genre>) : Filter.Group<GenreCheckBox>(title, genres.map { GenreCheckBox(it.name, it.id) })
     class GenreCheckBox(name: String, val id: String = name) : Filter.CheckBox(name)
@@ -576,18 +604,20 @@ abstract class Madara(
         return MangasPage(entries, hasNextPage)
     }
 
-    override fun searchMangaSelector() = "div.c-tabs-item__content"
+    override fun searchMangaSelector() = "div.c-tabs-item__content , .manga__item"
+
+    protected open val searchMangaUrlSelector = "div.post-title a"
 
     override fun searchMangaFromElement(element: Element): SManga {
         val manga = SManga.create()
 
         with(element) {
-            selectFirst("div.post-title a")!!.let {
+            selectFirst(searchMangaUrlSelector)!!.let {
                 manga.setUrlWithoutDomain(it.attr("abs:href"))
                 manga.title = it.ownText()
             }
             selectFirst("img")?.let {
-                manga.thumbnail_url = imageFromElement(it)
+                manga.thumbnail_url = processThumbnail(imageFromElement(it), true)
             }
         }
 
@@ -623,7 +653,7 @@ abstract class Madara(
         "Em Andamento", "En cours", "En Cours", "En cours de publication", "Ativo", "Lançando", "Đang Tiến Hành", "Devam Ediyor",
         "Devam ediyor", "In Corso", "In Arrivo", "مستمرة", "مستمر", "En Curso", "En curso", "Emision",
         "Curso", "En marcha", "Publicandose", "Publicándose", "En emision", "连载中", "Em Lançamento", "Devam Ediyo",
-        "Đang làm", "Em postagem", "Devam Eden", "Em progresso", "Em curso",
+        "Đang làm", "Em postagem", "Devam Eden", "Em progresso", "Em curso", "Atualizações Semanais",
     )
 
     protected val hiatusStatusList: Array<String> = arrayOf(
@@ -675,10 +705,10 @@ abstract class Madara(
                 }
             }
             selectFirst(mangaDetailsSelectorThumbnail)?.let {
-                manga.thumbnail_url = imageFromElement(it)
+                manga.thumbnail_url = processThumbnail(imageFromElement(it))
             }
             select(mangaDetailsSelectorStatus).last()?.let {
-                manga.status = with(it.text()) {
+                manga.status = with(it.text().filter { ch -> ch.isLetterOrDigit() || ch.isWhitespace() }.trim()) {
                     when {
                         containsIn(completedStatusList) -> SManga.COMPLETED
                         containsIn(ongoingStatusList) -> SManga.ONGOING
@@ -689,12 +719,11 @@ abstract class Madara(
                 }
             }
             val genres = select(mangaDetailsSelectorGenre)
-                .map { element -> element.text().lowercase(Locale.ROOT) }
-                .toMutableSet()
+                .mapTo(ArrayList()) { element -> element.text() }
 
             if (mangaDetailsSelectorTag.isNotEmpty()) {
                 select(mangaDetailsSelectorTag).forEach { element ->
-                    if (genres.contains(element.text()).not() &&
+                    if (
                         element.text().length <= 25 &&
                         element.text().contains("read", true).not() &&
                         element.text().contains(name, true).not() &&
@@ -702,29 +731,19 @@ abstract class Madara(
                         element.text().contains(manga.title, true).not() &&
                         element.text().contains(altName, true).not()
                     ) {
-                        genres.add(element.text().lowercase(Locale.ROOT))
+                        genres.add(element.text())
                     }
                 }
             }
 
             // add manga/manhwa/manhua thinggy to genre
             document.selectFirst(seriesTypeSelector)?.ownText()?.let {
-                if (it.isEmpty().not() && it.notUpdating() && it != "-" && genres.contains(it).not()) {
-                    genres.add(it.lowercase(Locale.ROOT))
+                if (it.isEmpty().not() && it.notUpdating() && it != "-") {
+                    genres.add(it)
                 }
             }
 
-            manga.genre = genres.toList().joinToString { genre ->
-                genre.replaceFirstChar {
-                    if (it.isLowerCase()) {
-                        it.titlecase(
-                            Locale.ROOT,
-                        )
-                    } else {
-                        it.toString()
-                    }
-                }
-            }
+            manga.genre = genres.distinctBy(String::lowercase).joinToString()
 
             // add alternative name to manga description
             document.selectFirst(altNameSelector)?.ownText()?.let {
@@ -742,9 +761,9 @@ abstract class Madara(
 
     // Manga Details Selector
     open val mangaDetailsSelectorTitle = "div.post-title h3, div.post-title h1, #manga-title > h1"
-    open val mangaDetailsSelectorAuthor = "div.author-content > a"
+    open val mangaDetailsSelectorAuthor = "div.author-content > a, div.manga-authors > a"
     open val mangaDetailsSelectorArtist = "div.artist-content > a"
-    open val mangaDetailsSelectorStatus = "div.summary-content"
+    open val mangaDetailsSelectorStatus = "div.summary-content, div.summary-heading:contains(Status) + div"
     open val mangaDetailsSelectorDescription = "div.description-summary div.summary__content, div.summary_content div.post-content_item > h5 + div, div.summary_content div.manga-excerpt"
     open val mangaDetailsSelectorThumbnail = "div.summary_image img"
     open val mangaDetailsSelectorGenre = "div.genres-content a"
@@ -755,32 +774,29 @@ abstract class Madara(
     open val altName = intl["alt_names_heading"]
     open val updatingRegex = "Updating|Atualizando".toRegex(RegexOption.IGNORE_CASE)
 
-    fun String.notUpdating(): Boolean {
-        return this.contains(updatingRegex).not()
-    }
+    fun String.notUpdating(): Boolean = this.contains(updatingRegex).not()
 
-    private fun String.containsIn(array: Array<String>): Boolean {
-        return this.lowercase() in array.map { it.lowercase() }
-    }
+    private fun String.containsIn(array: Array<String>): Boolean = this.lowercase() in array.map { it.lowercase() }
 
-    protected open fun imageFromElement(element: Element): String? {
-        return when {
-            element.hasAttr("data-src") -> element.attr("abs:data-src")
-            element.hasAttr("data-lazy-src") -> element.attr("abs:data-lazy-src")
-            element.hasAttr("srcset") -> element.attr("abs:srcset").getSrcSetImage()
-            element.hasAttr("data-cfsrc") -> element.attr("abs:data-cfsrc")
-            else -> element.attr("abs:src")
-        }
+    protected open fun imageFromElement(element: Element): String? = when {
+        element.hasAttr("data-src") -> element.attr("abs:data-src")
+        element.hasAttr("data-lazy-src") -> element.attr("abs:data-lazy-src")
+        element.hasAttr("srcset") -> element.attr("abs:srcset").getSrcSetImage()
+        element.hasAttr("data-cfsrc") -> element.attr("abs:data-cfsrc")
+        else -> element.attr("abs:src")
     }
 
     /**
      *  Get the best image quality available from srcset
      */
-    private fun String.getSrcSetImage(): String? {
-        return this.split(" ")
-            .filter(URL_REGEX::matches)
-            .maxOfOrNull(String::toString)
-    }
+    protected open fun String.getSrcSetImage(): String? = this.split(" ")
+        .filter(URL_REGEX::matches)
+        .maxOfOrNull(String::toString)
+
+    /**
+     *  Apply any additional processing to the thumbnail URL if needed.
+     */
+    protected open fun processThumbnail(url: String?, fromSearch: Boolean = false): String? = url
 
     /**
      * Set it to true if the source uses the new AJAX endpoint to
@@ -805,9 +821,7 @@ abstract class Madara(
         return POST("$baseUrl/wp-admin/admin-ajax.php", xhrHeaders, form)
     }
 
-    protected open fun xhrChaptersRequest(mangaUrl: String): Request {
-        return POST("$mangaUrl/ajax/chapters", xhrHeaders)
-    }
+    protected open fun xhrChaptersRequest(mangaUrl: String): Request = POST("$mangaUrl/ajax/chapters", xhrHeaders)
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
@@ -878,12 +892,10 @@ abstract class Madara(
     open fun parseChapterDate(date: String?): Long {
         date ?: return 0
 
-        fun SimpleDateFormat.tryParse(string: String): Long {
-            return try {
-                parse(string)?.time ?: 0
-            } catch (_: ParseException) {
-                0
-            }
+        fun SimpleDateFormat.tryParse(string: String): Long = try {
+            parse(string)?.time ?: 0
+        } catch (_: ParseException) {
+            0
         }
 
         return when {
@@ -897,6 +909,7 @@ abstract class Madara(
                     set(Calendar.MILLISECOND, 0)
                 }.timeInMillis
             }
+
             WordSet("today").startsWith(date) -> {
                 Calendar.getInstance().apply {
                     set(Calendar.HOUR_OF_DAY, 0)
@@ -905,6 +918,7 @@ abstract class Madara(
                     set(Calendar.MILLISECOND, 0)
                 }.timeInMillis
             }
+
             WordSet("يومين").startsWith(date) -> {
                 Calendar.getInstance().apply {
                     add(Calendar.DAY_OF_MONTH, -2) // day before yesterday
@@ -914,12 +928,20 @@ abstract class Madara(
                     set(Calendar.MILLISECOND, 0)
                 }.timeInMillis
             }
-            WordSet("ago", "atrás", "önce", "قبل").endsWith(date) -> {
+
+            WordSet("ago", "atrás", "önce", "قبل", "trước").endsWith(date) -> {
                 parseRelativeDate(date)
             }
-            WordSet("hace").startsWith(date) -> {
+
+            WordSet("hace", "năm", "tháng", "tuần", "ngày", "giờ", "phút", "giây").startsWith(date) -> {
                 parseRelativeDate(date)
             }
+
+            // Handle "jour" with a number before it
+            date.contains(Regex("""\b\d+ jour""")) -> {
+                parseRelativeDate(date)
+            }
+
             date.contains(Regex("""\d(st|nd|rd|th)""")) -> {
                 // Clean date (e.g. 5th December 2019 to 5 December 2019) before parsing it
                 date.split(" ").map {
@@ -931,6 +953,7 @@ abstract class Madara(
                 }
                     .let { dateFormat.tryParse(it.joinToString(" ")) }
             }
+
             else -> dateFormat.tryParse(date)
         }
     }
@@ -944,11 +967,11 @@ abstract class Madara(
         return when {
             WordSet("hari", "gün", "jour", "día", "dia", "day", "วัน", "ngày", "giorni", "أيام", "天").anyWordIn(date) -> cal.apply { add(Calendar.DAY_OF_MONTH, -number) }.timeInMillis
             WordSet("jam", "saat", "heure", "hora", "hour", "ชั่วโมง", "giờ", "ore", "ساعة", "小时").anyWordIn(date) -> cal.apply { add(Calendar.HOUR, -number) }.timeInMillis
-            WordSet("menit", "dakika", "min", "minute", "minuto", "นาที", "دقائق").anyWordIn(date) -> cal.apply { add(Calendar.MINUTE, -number) }.timeInMillis
-            WordSet("detik", "segundo", "second", "วินาที").anyWordIn(date) -> cal.apply { add(Calendar.SECOND, -number) }.timeInMillis
-            WordSet("week", "semana").anyWordIn(date) -> cal.apply { add(Calendar.DAY_OF_MONTH, -number * 7) }.timeInMillis
-            WordSet("month", "mes").anyWordIn(date) -> cal.apply { add(Calendar.MONTH, -number) }.timeInMillis
-            WordSet("year", "año").anyWordIn(date) -> cal.apply { add(Calendar.YEAR, -number) }.timeInMillis
+            WordSet("menit", "dakika", "min", "minute", "minuto", "นาที", "دقائق", "phút").anyWordIn(date) -> cal.apply { add(Calendar.MINUTE, -number) }.timeInMillis
+            WordSet("detik", "segundo", "second", "วินาที", "giây").anyWordIn(date) -> cal.apply { add(Calendar.SECOND, -number) }.timeInMillis
+            WordSet("week", "semana", "tuần").anyWordIn(date) -> cal.apply { add(Calendar.DAY_OF_MONTH, -number * 7) }.timeInMillis
+            WordSet("month", "mes", "tháng").anyWordIn(date) -> cal.apply { add(Calendar.MONTH, -number) }.timeInMillis
+            WordSet("year", "año", "năm").anyWordIn(date) -> cal.apply { add(Calendar.YEAR, -number) }.timeInMillis
             else -> 0
         }
     }
@@ -963,6 +986,8 @@ abstract class Madara(
     open val pageListParseSelector = "div.page-break, li.blocks-gallery-item, .reading-content .text-left:not(:has(.blocks-gallery-item)) img"
 
     open val chapterProtectorSelector = "#chapter-protector-data"
+    open val chapterProtectorPasswordPrefix = "wpmangaprotectornonce='"
+    open val chapterProtectorDataPrefix = "chapter_data='"
 
     override fun pageListParse(document: Document): List<Page> {
         launchIO { countViews(document) }
@@ -978,11 +1003,11 @@ abstract class Madara(
             ?.let { Base64.decode(it, Base64.DEFAULT).toString(Charsets.UTF_8) }
             ?: chapterProtector.html()
         val password = chapterProtectorHtml
-            .substringAfter("wpmangaprotectornonce='")
+            .substringAfter(chapterProtectorPasswordPrefix)
             .substringBefore("';")
         val chapterData = json.parseToJsonElement(
             chapterProtectorHtml
-                .substringAfter("chapter_data='")
+                .substringAfter(chapterProtectorDataPrefix)
                 .substringBefore("';")
                 .replace("\\/", "/"),
         ).jsonObject
@@ -1000,9 +1025,7 @@ abstract class Madara(
         }
     }
 
-    override fun imageRequest(page: Page): Request {
-        return GET(page.imageUrl!!, headers.newBuilder().set("Referer", page.url).build())
-    }
+    override fun imageRequest(page: Page): Request = GET(page.imageUrl!!, headers.newBuilder().set("Referer", page.url).build())
 
     override fun imageUrlParse(document: Document) = ""
 
@@ -1063,10 +1086,17 @@ abstract class Madara(
      * Fetch the genres from the source to be used in the filters.
      */
     protected fun fetchGenres() {
-        if (fetchGenres && fetchGenresAttempts < 3 && genresList.isEmpty()) {
+        if (fetchGenres && fetchGenresAttempts < 3 && !genresFetched) {
             try {
-                genresList = client.newCall(genresRequest()).execute()
+                client.newCall(genresRequest()).execute()
                     .use { parseGenres(it.asJsoup()) }
+                    .also {
+                        genresFetched = true
+                    }
+                    .takeIf { it.isNotEmpty() }
+                    ?.also {
+                        genresList = it
+                    }
             } catch (_: Exception) {
             } finally {
                 fetchGenresAttempts++
@@ -1077,26 +1107,22 @@ abstract class Madara(
     /**
      * The request to the search page (or another one) that have the genres list.
      */
-    protected open fun genresRequest(): Request {
-        return GET("$baseUrl/?s=genre&post_type=wp-manga", headers)
-    }
+    protected open fun genresRequest(): Request = GET("$baseUrl/?s=genre&post_type=wp-manga", headers)
 
     /**
      * Get the genres from the search page document.
      *
      * @param document The search page document
      */
-    protected open fun parseGenres(document: Document): List<Genre> {
-        return document.selectFirst("div.checkbox-group")
-            ?.select("div.checkbox")
-            .orEmpty()
-            .map { li ->
-                Genre(
-                    li.selectFirst("label")!!.text(),
-                    li.selectFirst("input[type=checkbox]")!!.`val`(),
-                )
-            }
-    }
+    protected open fun parseGenres(document: Document): List<Genre> = document.selectFirst("div.checkbox-group")
+        ?.select("div.checkbox")
+        .orEmpty()
+        .map { li ->
+            Genre(
+                li.selectFirst("label")!!.text(),
+                li.selectFirst("input[type=checkbox]")!!.`val`(),
+            )
+        }
 
     // https://stackoverflow.com/a/66614516
     protected fun String.decodeHex(): ByteArray {

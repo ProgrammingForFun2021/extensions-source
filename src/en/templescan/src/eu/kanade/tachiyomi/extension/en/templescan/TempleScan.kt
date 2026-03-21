@@ -1,7 +1,9 @@
 package eu.kanade.tachiyomi.extension.en.templescan
 
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
@@ -10,7 +12,8 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
-import kotlinx.serialization.decodeFromString
+import keiyoushi.lib.randomua.addRandomUAPreference
+import keiyoushi.lib.randomua.setRandomUserAgent
 import kotlinx.serialization.json.Json
 import okhttp3.Request
 import okhttp3.Response
@@ -18,7 +21,9 @@ import rx.Observable
 import uy.kohesive.injekt.injectLazy
 import kotlin.math.min
 
-class TempleScan : HttpSource() {
+class TempleScan :
+    HttpSource(),
+    ConfigurableSource {
 
     override val name = "Temple Scan"
 
@@ -33,6 +38,7 @@ class TempleScan : HttpSource() {
     override fun headersBuilder() = super.headersBuilder()
         .set("referer", "$baseUrl/")
         .set("origin", baseUrl)
+        .setRandomUserAgent()
 
     override val client = network.cloudflareClient.newBuilder()
         .rateLimit(1)
@@ -40,13 +46,9 @@ class TempleScan : HttpSource() {
 
     private val json: Json by injectLazy()
 
-    override fun fetchPopularManga(page: Int): Observable<MangasPage> {
-        return fetchSearchManga(page, "", OrderFilter.POPULAR)
-    }
+    override fun fetchPopularManga(page: Int): Observable<MangasPage> = fetchSearchManga(page, "", OrderFilter.POPULAR)
 
-    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> {
-        return fetchSearchManga(page, "", OrderFilter.LATEST)
-    }
+    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> = fetchSearchManga(page, "", OrderFilter.LATEST)
 
     private lateinit var seriesCache: List<BrowseSeries>
 
@@ -60,9 +62,7 @@ class TempleScan : HttpSource() {
         return Observable.just(parseDirectory(page, query, filters))
     }
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        return GET("$baseUrl/comics", headers)
-    }
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = GET("$baseUrl/comics", headers)
 
     private fun parseSearchResponse(response: Response) {
         val document = response.asJsoup()
@@ -171,6 +171,8 @@ class TempleScan : HttpSource() {
         }
     }
 
+    override fun getMangaUrl(manga: SManga) = "$baseUrl${manga.url}"
+
     override fun chapterListParse(response: Response): List<SChapter> {
         val chapters = DETAILS_REGEX.find(response.body.string())!!.groupValues[1]
             .unescape()
@@ -195,23 +197,22 @@ class TempleScan : HttpSource() {
         }
     }
 
-    override fun pageListParse(response: Response): List<Page> {
-        return response.asJsoup().select("img[alt^=chapter]").mapIndexed { idx, img ->
-            Page(idx, imageUrl = img.absUrl("src"))
+    override fun pageListParse(response: Response): List<Page> = IMAGES_REGEX.find(response.body.string())!!.groupValues[1]
+        .unescape()
+        .parseAs<List<String>>()
+        .mapIndexed { index, image ->
+            Page(index, imageUrl = image)
         }
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        screen.addRandomUAPreference()
     }
 
-    private fun String.unescape(): String {
-        return UNESCAPE_REGEX.replace(this, "$1")
-    }
+    private fun String.unescape(): String = UNESCAPE_REGEX.replace(this, "$1")
 
-    private inline fun <reified T> String.parseAs(): T {
-        return json.decodeFromString(this)
-    }
+    private inline fun <reified T> String.parseAs(): T = json.decodeFromString(this)
 
-    private inline fun <reified T : Filter<*>> FilterList.get(): T? {
-        return filterIsInstance<T>().firstOrNull()
-    }
+    private inline fun <reified T : Filter<*>> FilterList.get(): T? = filterIsInstance<T>().firstOrNull()
 
     override fun popularMangaRequest(page: Int) = throw UnsupportedOperationException()
     override fun popularMangaParse(response: Response) = throw UnsupportedOperationException()
@@ -223,3 +224,4 @@ class TempleScan : HttpSource() {
 
 private val UNESCAPE_REGEX = """\\(.)""".toRegex()
 private val DETAILS_REGEX = Regex("""info\\":(\{.*\}).*userIsFollowed""")
+private val IMAGES_REGEX = Regex("""images\\":(\[.*?]).*""")

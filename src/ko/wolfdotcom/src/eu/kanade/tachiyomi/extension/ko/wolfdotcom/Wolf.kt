@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.ko.wolfdotcom
 
-import android.app.Application
 import android.content.SharedPreferences
 import android.util.Log
 import androidx.preference.EditTextPreference
@@ -16,10 +15,11 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferencesLazy
+import keiyoushi.utils.parseAs
+import keiyoushi.utils.toJsonString
+import keiyoushi.utils.tryParse
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.Request
@@ -27,12 +27,8 @@ import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import rx.Observable
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
-import uy.kohesive.injekt.injectLazy
 import java.io.IOException
 import java.net.URLEncoder
-import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -41,7 +37,8 @@ open class Wolf(
     private val browsePath: String,
     private val entryPath: String,
     private val readerPath: String,
-) : HttpSource(), ConfigurableSource {
+) : HttpSource(),
+    ConfigurableSource {
 
     override val name = "늑대닷컴 - $name"
 
@@ -54,21 +51,14 @@ open class Wolf(
 
     override val client = network.cloudflareClient.newBuilder()
         .addInterceptor(::domainNumberInterceptor)
+        .addNetworkInterceptor(::refererInterceptor)
         .build()
 
-    private val json: Json by injectLazy()
+    private val preference: SharedPreferences by getPreferencesLazy()
 
-    private val preference: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    override fun fetchPopularManga(page: Int): Observable<MangasPage> = fetchSearchManga(page, "", POPULAR)
 
-    override fun fetchPopularManga(page: Int): Observable<MangasPage> {
-        return fetchSearchManga(page, "", POPULAR)
-    }
-
-    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> {
-        return fetchSearchManga(page, "", LATEST)
-    }
+    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> = fetchSearchManga(page, "", LATEST)
 
     private var searchFilters: List<FilterData> = emptyList()
     private var filterParseError = false
@@ -178,18 +168,16 @@ open class Wolf(
         }.chunked(20)
     }
 
-    private fun paginatedBrowsePage(index: Int): MangasPage {
-        return MangasPage(
-            browseCache[index].map {
-                SManga.create().apply {
-                    url = it.id.toString()
-                    title = it.title
-                    thumbnail_url = it.cover
-                }
-            },
-            browseCache.lastIndex > index,
-        )
-    }
+    private fun paginatedBrowsePage(index: Int): MangasPage = MangasPage(
+        browseCache[index].map {
+            SManga.create().apply {
+                url = it.id.toString()
+                title = it.title
+                thumbnail_url = it.cover
+            }
+        },
+        browseCache.lastIndex > index,
+    )
 
     private val specialChars = Regex("""[^\p{InHangul_Syllables}0-9a-z ]""", RegexOption.IGNORE_CASE)
     private val styleImage = Regex("""background-image:url\(([^)]+)\)""")
@@ -227,16 +215,12 @@ open class Wolf(
             }
     }
 
-    override fun getMangaUrl(manga: SManga): String {
-        return baseUrl.toHttpUrl().newBuilder()
-            .addPathSegment(entryPath)
-            .addQueryParameter("toon", manga.url)
-            .toString()
-    }
+    override fun getMangaUrl(manga: SManga): String = baseUrl.toHttpUrl().newBuilder()
+        .addPathSegment(entryPath)
+        .addQueryParameter("toon", manga.url)
+        .toString()
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        return GET(getMangaUrl(manga), headers)
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request = GET(getMangaUrl(manga), headers)
 
     override fun mangaDetailsParse(response: Response): SManga {
         val document = response.asJsoup()
@@ -250,9 +234,7 @@ open class Wolf(
         }
     }
 
-    override fun chapterListRequest(manga: SManga): Request {
-        return mangaDetailsRequest(manga)
-    }
+    override fun chapterListRequest(manga: SManga): Request = mangaDetailsRequest(manga)
 
     @Serializable
     class ChapterUrl(
@@ -266,32 +248,20 @@ open class Wolf(
         return document.select(".webtoon-bbs-list a.view_open").map { el ->
             val chapUrl = el.absUrl("href").toHttpUrl()
             SChapter.create().apply {
-                url = json.encodeToString(
-                    ChapterUrl(
-                        chapUrl.queryParameter("toon")!!,
-                        chapUrl.queryParameter("num")!!,
-                    ),
-                )
+                url = ChapterUrl(
+                    chapUrl.queryParameter("toon")!!,
+                    chapUrl.queryParameter("num")!!,
+                ).toJsonString()
                 name = el.selectFirst(".subject")!!.ownText()
-                date_upload = el.selectFirst(".date")?.text().parseDate()
+                date_upload = dateFormat.tryParse(el.selectFirst(".date")?.text())
             }
         }
     }
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH)
 
-    private fun String?.parseDate(): Long {
-        this ?: return 0L
-
-        return try {
-            dateFormat.parse(this)!!.time
-        } catch (_: ParseException) {
-            0L
-        }
-    }
-
     override fun getChapterUrl(chapter: SChapter): String {
-        val chapUrl = json.decodeFromString<ChapterUrl>(chapter.url)
+        val chapUrl = chapter.url.parseAs<ChapterUrl>()
 
         return baseUrl.toHttpUrl().newBuilder()
             .addPathSegment(readerPath)
@@ -300,9 +270,7 @@ open class Wolf(
             .toString()
     }
 
-    override fun pageListRequest(chapter: SChapter): Request {
-        return GET(getChapterUrl(chapter), headers)
-    }
+    override fun pageListRequest(chapter: SChapter): Request = GET(getChapterUrl(chapter), headers)
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
@@ -393,24 +361,20 @@ open class Wolf(
 
     private val domainRegex = Regex("""^https?://wfwf(\d+)\.com""")
 
-    override fun imageUrlParse(response: Response): String {
-        throw UnsupportedOperationException()
+    private fun refererInterceptor(chain: Interceptor.Chain): Response {
+        val request = chain.request().newBuilder()
+            .header("Referer", "$baseUrl/")
+            .build()
+
+        return chain.proceed(request)
     }
-    override fun popularMangaParse(response: Response): MangasPage {
-        throw UnsupportedOperationException()
-    }
-    override fun popularMangaRequest(page: Int): Request {
-        throw UnsupportedOperationException()
-    }
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        throw UnsupportedOperationException()
-    }
-    override fun latestUpdatesRequest(page: Int): Request {
-        throw UnsupportedOperationException()
-    }
-    override fun searchMangaParse(response: Response): MangasPage {
-        throw UnsupportedOperationException()
-    }
+
+    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
+    override fun popularMangaParse(response: Response): MangasPage = throw UnsupportedOperationException()
+    override fun popularMangaRequest(page: Int): Request = throw UnsupportedOperationException()
+    override fun latestUpdatesParse(response: Response): MangasPage = throw UnsupportedOperationException()
+    override fun latestUpdatesRequest(page: Int): Request = throw UnsupportedOperationException()
+    override fun searchMangaParse(response: Response): MangasPage = throw UnsupportedOperationException()
 }
 
 private const val PREF_DOMAIN_NUM = "domain_number"

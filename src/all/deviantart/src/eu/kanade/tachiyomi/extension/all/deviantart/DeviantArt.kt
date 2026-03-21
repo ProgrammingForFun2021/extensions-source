@@ -1,6 +1,10 @@
 package eu.kanade.tachiyomi.extension.all.deviantart
 
+import android.content.SharedPreferences
+import androidx.preference.ListPreference
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -8,6 +12,8 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferencesLazy
+import keiyoushi.utils.tryParse
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
@@ -15,15 +21,18 @@ import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.parser.Parser
-import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class DeviantArt : HttpSource() {
+class DeviantArt :
+    HttpSource(),
+    ConfigurableSource {
     override val name = "DeviantArt"
-    override val baseUrl = "https://deviantart.com"
+    override val baseUrl = "https://www.deviantart.com"
     override val lang = "all"
     override val supportsLatest = false
+
+    private val preferences: SharedPreferences by getPreferencesLazy()
 
     override fun headersBuilder() = Headers.Builder().apply {
         add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0")
@@ -36,21 +45,9 @@ class DeviantArt : HttpSource() {
         SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.ENGLISH)
     }
 
-    private fun parseDate(dateStr: String?): Long {
-        return try {
-            dateFormat.parse(dateStr ?: "")!!.time
-        } catch (_: ParseException) {
-            0L
-        }
-    }
+    override fun popularMangaRequest(page: Int): Request = throw UnsupportedOperationException(SEARCH_FORMAT_MSG)
 
-    override fun popularMangaRequest(page: Int): Request {
-        throw UnsupportedOperationException(SEARCH_FORMAT_MSG)
-    }
-
-    override fun popularMangaParse(response: Response): MangasPage {
-        throw UnsupportedOperationException(SEARCH_FORMAT_MSG)
-    }
+    override fun popularMangaParse(response: Response): MangasPage = throw UnsupportedOperationException(SEARCH_FORMAT_MSG)
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val matchGroups = requireNotNull(
@@ -66,38 +63,38 @@ class DeviantArt : HttpSource() {
         return MangasPage(listOf(manga), false)
     }
 
-    override fun latestUpdatesRequest(page: Int): Request {
-        throw UnsupportedOperationException()
-    }
+    override fun latestUpdatesRequest(page: Int): Request = throw UnsupportedOperationException()
 
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        throw UnsupportedOperationException()
-    }
+    override fun latestUpdatesParse(response: Response): MangasPage = throw UnsupportedOperationException()
 
     override fun mangaDetailsParse(response: Response): SManga {
         val document = response.asJsoup()
-        val subFolderGallery = document.selectFirst("#sub-folder-gallery")
-        val manga = SManga.create().apply {
-            // If manga is sub-gallery then use sub-gallery name, else use gallery name
-            title = subFolderGallery?.selectFirst("._2vMZg + ._2vMZg")?.text()?.substringBeforeLast(" ")
-                ?: subFolderGallery?.selectFirst("[aria-haspopup=listbox] > div")!!.ownText()
+        val gallery = document.selectFirst("#sub-folder-gallery")
+
+        // If manga is sub-gallery then use sub-gallery name, else use gallery name
+        val galleryName = gallery?.selectFirst("._2vMZg + ._2vMZg")?.text()?.substringBeforeLast(" ")
+            ?: gallery?.selectFirst("[aria-haspopup=listbox] > div")!!.ownText()
+        val artistInTitle = (preferences.artistInTitle == ArtistInTitle.ALWAYS.name) ||
+            ((preferences.artistInTitle == ArtistInTitle.ONLY_ALL_GALLERIES.name) && (galleryName == "All"))
+
+        return SManga.create().apply {
+            setUrlWithoutDomain(response.request.url.toString())
             author = document.title().substringBefore(" ")
-            description = subFolderGallery?.selectFirst(".legacy-journal")?.wholeText()
-            thumbnail_url = subFolderGallery?.selectFirst("img[property=contentUrl]")?.absUrl("src")
+            title = when {
+                artistInTitle -> "$author - $galleryName"
+                else -> galleryName
+            }
+            description = gallery?.selectFirst(".legacy-journal")?.wholeText()
+            thumbnail_url = gallery?.selectFirst("img[property=contentUrl]")?.absUrl("src")
         }
-        manga.setUrlWithoutDomain(response.request.url.toString())
-        return manga
     }
 
     override fun chapterListRequest(manga: SManga): Request {
         val pathSegments = getMangaUrl(manga).toHttpUrl().pathSegments
         val username = pathSegments[0]
-        val folderId = pathSegments[2]
-
-        val query = if (folderId == "all") {
-            "gallery:$username"
-        } else {
-            "gallery:$username/$folderId"
+        val query = when (val folderId = pathSegments[2]) {
+            "all" -> "gallery:$username"
+            else -> "gallery:$username/$folderId"
         }
 
         val url = backendBuilder()
@@ -123,51 +120,83 @@ class DeviantArt : HttpSource() {
             nextUrl = newDocument.selectFirst("[rel=next]")?.absUrl("href")
         }
 
-        return indexChapterList(chapterList.toList())
+        return chapterList.also(::orderChapterList).toList()
     }
 
-    private fun parseToChapterList(document: Document): List<SChapter> {
-        val items = document.select("item")
-        return items.map {
-            val chapter = SChapter.create()
-            chapter.setUrlWithoutDomain(it.selectFirst("link")!!.text())
-            chapter.apply {
-                name = it.selectFirst("title")!!.text()
-                date_upload = parseDate(it.selectFirst("pubDate")?.text())
-                scanlator = it.selectFirst("media|credit")?.text()
-            }
+    private fun parseToChapterList(document: Document): List<SChapter> = document.select("item").map {
+        SChapter.create().apply {
+            setUrlWithoutDomain(it.selectFirst("link")!!.text())
+            name = it.selectFirst("title")!!.text()
+            date_upload = dateFormat.tryParse(it.selectFirst("pubDate")?.text())
+            scanlator = it.selectFirst("media|credit")?.text()
         }
     }
 
-    private fun indexChapterList(chapterList: List<SChapter>): List<SChapter> {
-        // DeviantArt allows users to arrange galleries arbitrarily so we will
-        // primitively index the list by checking the first and last dates
-        return if (chapterList.first().date_upload > chapterList.last().date_upload) {
-            chapterList.mapIndexed { i, chapter ->
-                chapter.apply { chapter_number = chapterList.size - i.toFloat() }
-            }
-        } else {
-            chapterList.mapIndexed { i, chapter ->
-                chapter.apply { chapter_number = i.toFloat() + 1 }
-            }
+    private fun orderChapterList(chapterList: MutableList<SChapter>) {
+        // In Mihon's updates tab, chapters are ordered by source instead
+        // of chapter number, so to avoid updates being shown in reverse,
+        // disregard source order and order chronologically instead
+        if (chapterList.first().date_upload < chapterList.last().date_upload) {
+            chapterList.reverse()
+        }
+        chapterList.forEachIndexed { i, chapter ->
+            chapter.chapter_number = chapterList.size - i.toFloat()
         }
     }
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
-        val imageUrl = document.selectFirst("img[fetchpriority=high]")?.absUrl("src")
-        return listOf(Page(0, imageUrl = imageUrl))
+        val buttons = document.selectFirst("[draggable=false]")?.children()
+        return if (buttons == null) {
+            val imageUrl = document.selectFirst("img[fetchpriority=high]")?.absUrl("src")
+            listOf(Page(0, imageUrl = imageUrl))
+        } else {
+            buttons.mapIndexed { i, button ->
+                // Remove everything past "/v1/" to get original instead of thumbnail
+                // But need to preserve the query parameter where the token is
+                val imageUrl = button.selectFirst("img")?.absUrl("src")
+                    ?.replaceFirst(Regex("""/v1(/.*)?(?=\?)"""), "")
+                Page(i, imageUrl = imageUrl)
+            }
+        }
     }
 
-    override fun imageUrlParse(response: Response): String {
-        throw UnsupportedOperationException()
+    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
+
+    private fun Response.asJsoupXml(): Document = Jsoup.parse(body.string(), request.url.toString(), Parser.xmlParser())
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        val artistInTitlePref = ListPreference(screen.context).apply {
+            key = ArtistInTitle.PREF_KEY
+            title = "Artist name in manga title"
+            entries = ArtistInTitle.values().map { it.text }.toTypedArray()
+            entryValues = ArtistInTitle.values().map { it.name }.toTypedArray()
+            summary = "Current: %s\n\n" +
+                "Changing this preference will not automatically apply to manga in Library " +
+                "and History, so refresh all DeviantArt manga and/or clear database in Settings " +
+                "> Advanced after doing so."
+            setDefaultValue(ArtistInTitle.defaultValue.name)
+        }
+
+        screen.addPreference(artistInTitlePref)
     }
 
-    private fun Response.asJsoupXml(): Document {
-        return Jsoup.parse(body.string(), request.url.toString(), Parser.xmlParser())
+    private enum class ArtistInTitle(val text: String) {
+        NEVER("Never"),
+        ALWAYS("Always"),
+        ONLY_ALL_GALLERIES("Only in \"All\" galleries"),
+        ;
+
+        companion object {
+            const val PREF_KEY = "artistInTitlePref"
+            val defaultValue = ONLY_ALL_GALLERIES
+        }
     }
+
+    private val SharedPreferences.artistInTitle
+        get() = getString(ArtistInTitle.PREF_KEY, ArtistInTitle.defaultValue.name)
 
     companion object {
-        const val SEARCH_FORMAT_MSG = "Please enter a query in the format of gallery:{username} or gallery:{username}/{folderId}"
+        private const val SEARCH_FORMAT_MSG = "Please enter a query in the format of gallery:{username} or gallery:{username}/{folderId}"
     }
 }

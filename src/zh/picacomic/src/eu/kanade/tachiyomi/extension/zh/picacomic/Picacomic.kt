@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.zh.picacomic
 
-import android.app.Application
 import android.content.SharedPreferences
 import android.util.Base64
 import androidx.preference.EditTextPreference
@@ -16,6 +15,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.utils.getPreferences
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -23,33 +23,36 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import okhttp3.Headers
 import okhttp3.Headers.Companion.toHeaders
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.floor
 
-class Picacomic : HttpSource(), ConfigurableSource {
+class Picacomic :
+    HttpSource(),
+    ConfigurableSource {
     override val lang = "zh"
     override val supportsLatest = true
     override val name = "哔咔漫画"
     override val baseUrl = "https://picaapi.picacomic.com"
     private val leeway: Long = 10
 
-    private val preferences: SharedPreferences =
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
+    private val preferences: SharedPreferences = getPreferences()
+
+    override val client: OkHttpClient = network.client.newBuilder()
+        .dns(ChannelDns(baseUrl.removePrefix("https://picaapi."), network.client, preferences)).build()
 
     private val blocklist = preferences.getString("BLOCK_GENRES", "")!!
         .split(',').map { it.trim() }
 
     private val basicHeaders = mapOf(
         "api-key" to "C69BAF41DA5ABD1FFEDC6D2FEA56B",
-        "app-channel" to preferences.getString("APP_CHANNEL", "2")!!,
+        "app-channel" to preferences.getString(APP_CHANNEL, "2")!!,
         "app-version" to "2.2.1.3.3.4",
         "app-uuid" to "defaultUuid",
         "app-platform" to "android",
@@ -235,11 +238,9 @@ class Picacomic : HttpSource(), ConfigurableSource {
         return POST(url, picaHeaders(url, "POST"), body)
     }
 
-    private fun hitBlocklist(comic: PicaSearchComic): Boolean {
-        return ((comic.tags ?: (emptyList<String>() + comic.categories)))
-            .map(String::trim)
-            .any { it in blocklist }
-    }
+    private fun hitBlocklist(comic: PicaSearchComic): Boolean = ((comic.tags ?: (emptyList<String>() + comic.categories)))
+        .map(String::trim)
+        .any { it in blocklist }
 
     override fun searchMangaParse(response: Response): MangasPage {
         if (response.request.url.toString().contains("/comics/leaderboard".toRegex())) {
@@ -265,8 +266,7 @@ class Picacomic : HttpSource(), ConfigurableSource {
         return MangasPage(mangas, comics.page < comics.pages)
     }
 
-    override fun mangaDetailsRequest(manga: SManga): Request =
-        GET(manga.url, picaHeaders(manga.url))
+    override fun mangaDetailsRequest(manga: SManga): Request = GET(manga.url, picaHeaders(manga.url))
 
     override fun mangaDetailsParse(response: Response): SManga {
         val comic = json.decodeFromString<PicaResponse>(
@@ -283,6 +283,7 @@ class Picacomic : HttpSource(), ConfigurableSource {
                 .distinct()
                 .joinToString(", ")
             status = if (comic.finished) SManga.COMPLETED else SManga.ONGOING
+            thumbnail_url = comic.thumb.let { "${it.fileServer}/static/${it.path}" }
         }
     }
 
@@ -358,46 +359,48 @@ class Picacomic : HttpSource(), ConfigurableSource {
         RankFilter(),
     )
 
-    private class SortFilter : UriPartFilter(
-        "排序",
-        arrayOf(
-            "新到旧" to "dd",
-            "旧到新" to "da",
-            "最多爱心" to "ld",
-            "最多绅士指名" to "vd",
-        ),
-    )
+    private class SortFilter :
+        UriPartFilter(
+            "排序",
+            arrayOf(
+                "新到旧" to "dd",
+                "旧到新" to "da",
+                "最多爱心" to "ld",
+                "最多绅士指名" to "vd",
+            ),
+        )
 
-    private class CategoryFilter : UriPartFilter(
-        "类型",
-        arrayOf("全部" to "") + arrayOf(
-            "大家都在看", "牛牛不哭", "那年今天", "官方都在看",
-            "嗶咔漢化", "全彩", "長篇", "同人", "短篇", "圓神領域",
-            "碧藍幻想", "CG雜圖", "純愛", "百合花園", "後宮閃光", "單行本", "姐姐系",
-            "妹妹系", "SM", "人妻", "NTR", "強暴",
-            "艦隊收藏", "Love Live", "SAO 刀劍神域", "Fate",
-            "東方", "禁書目錄", "Cosplay",
-            "英語 ENG", "生肉", "性轉換", "足の恋", "非人類",
-            "耽美花園", "偽娘哲學", "扶他樂園", "重口地帶", "歐美", "WEBTOON",
-        ).map { it to it }.toTypedArray(),
-    )
+    private class CategoryFilter :
+        UriPartFilter(
+            "类型",
+            arrayOf("全部" to "") + arrayOf(
+                "大家都在看", "牛牛不哭", "那年今天", "官方都在看",
+                "嗶咔漢化", "全彩", "長篇", "同人", "短篇", "圓神領域",
+                "碧藍幻想", "CG雜圖", "純愛", "百合花園", "後宮閃光", "單行本", "姐姐系",
+                "妹妹系", "SM", "人妻", "NTR", "強暴",
+                "艦隊收藏", "Love Live", "SAO 刀劍神域", "Fate",
+                "東方", "禁書目錄", "Cosplay",
+                "英語 ENG", "生肉", "性轉換", "足の恋", "非人類",
+                "耽美花園", "偽娘哲學", "扶他樂園", "重口地帶", "歐美", "WEBTOON",
+            ).map { it to it }.toTypedArray(),
+        )
 
-    private class RankFilter : UriPartFilter(
-        "榜单",
-        arrayOf(
-            Pair("无", ""),
-            Pair("过去24小时最热门", "/comics/leaderboard?tt=H24&ct=VC"),
-            Pair("过去7天最热门", "/comics/leaderboard?tt=D7&ct=VC"),
-            Pair("过去30天最热门", "/comics/leaderboard?tt=D30&ct=VC"),
-        ),
-    )
+    private class RankFilter :
+        UriPartFilter(
+            "榜单",
+            arrayOf(
+                Pair("无", ""),
+                Pair("过去24小时最热门", "/comics/leaderboard?tt=H24&ct=VC"),
+                Pair("过去7天最热门", "/comics/leaderboard?tt=D7&ct=VC"),
+                Pair("过去30天最热门", "/comics/leaderboard?tt=D30&ct=VC"),
+            ),
+        )
 
     private open class UriPartFilter(
         displayName: String,
         val vals: Array<Pair<String, String>>,
         defaultValue: Int = 0,
-    ) :
-        Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray(), defaultValue) {
+    ) : Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray(), defaultValue) {
         open fun toUriPart() = vals[state].second
     }
 
@@ -444,7 +447,7 @@ class Picacomic : HttpSource(), ConfigurableSource {
         }.let(screen::addPreference)
 
         ListPreference(screen.context).apply {
-            key = "APP_CHANNEL"
+            key = APP_CHANNEL
             title = "分流"
             entries = arrayOf("1", "2", "3")
             entryValues = entries
@@ -454,5 +457,18 @@ class Picacomic : HttpSource(), ConfigurableSource {
                 preferences.edit().putString(key, newValue as String).commit()
             }
         }.let(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = APP_CHANNEL_URL
+            title = "分流url"
+            summary =
+                "自定义用于获取分流2、3的目标地址；分流1不受影响；（如果之前获取成功了需要重启才能生效，如果出现超时可以多重试几次）"
+            setOnPreferenceChangeListener { _, newValue ->
+                preferences.edit().putString(APP_CHANNEL_URL, newValue as String).commit()
+            }
+        }.let(screen::addPreference)
     }
 }
+
+const val APP_CHANNEL = "APP_CHANNEL"
+const val APP_CHANNEL_URL = "APP_CHANNEL_URL"

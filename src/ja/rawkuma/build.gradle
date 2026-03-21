@@ -1,9 +1,10 @@
 ext {
     extName = 'Rawkuma'
     extClass = '.Rawkuma'
-    themePkg = 'mangathemesia'
-    baseUrl = 'https://rawkuma.com'
-    overrideVersionCode = 1
+    themePkg = 'natsuid'
+    baseUrl = 'https://rawkuma.net'
+    overrideVersionCode = 35
+    isNsfw = true
 }
 
 apply from: "$rootDir/common.gradle"

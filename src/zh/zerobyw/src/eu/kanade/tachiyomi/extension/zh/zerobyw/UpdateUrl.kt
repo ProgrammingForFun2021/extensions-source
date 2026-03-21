@@ -21,13 +21,13 @@ var SharedPreferences.baseUrl: String
     get() = getString(BASE_URL_PREF, DEFAULT_BASE_URL)!!
     set(value) = edit().putString(BASE_URL_PREF, value).apply()
 
-fun SharedPreferences.clearOldBaseUrl(): SharedPreferences {
-    if (getString(DEFAULT_BASE_URL_PREF, "")!! == DEFAULT_BASE_URL) return this
+fun SharedPreferences.clearOldBaseUrl() {
+    if (getString(DEFAULT_BASE_URL_PREF, "")!! == DEFAULT_BASE_URL) return
+
     edit()
         .remove(BASE_URL_PREF)
         .putString(DEFAULT_BASE_URL_PREF, DEFAULT_BASE_URL)
         .apply()
-    return this
 }
 
 fun getBaseUrlPreference(context: Context) = EditTextPreference(context).apply {
@@ -49,15 +49,13 @@ fun getBaseUrlPreference(context: Context) = EditTextPreference(context).apply {
     }
 }
 
-fun ciGetUrl(client: OkHttpClient): String {
-    return try {
-        val response = client.newCall(GET(LATEST_DOMAIN_URL)).execute()
-        response.body.string()
-    } catch (e: Throwable) {
-        println("::error ::Zerobyw: Failed to fetch latest URL")
-        e.printStackTrace()
-        DEFAULT_BASE_URL
-    }
+fun ciGetUrl(client: OkHttpClient): String = try {
+    val response = client.newCall(GET(LATEST_DOMAIN_URL)).execute()
+    response.body.string()
+} catch (e: Throwable) {
+    println("::error ::Zerobyw: Failed to fetch latest URL")
+    e.printStackTrace()
+    DEFAULT_BASE_URL
 }
 
 private fun checkBaseUrl(url: String) {

@@ -1,8 +1,0 @@
-ext {
-    extName = 'Sussy Scan'
-    extClass = '.SussyScan'
-    extVersionCode = 43
-    isNsfw = true
-}
-
-apply from: "$rootDir/common.gradle"

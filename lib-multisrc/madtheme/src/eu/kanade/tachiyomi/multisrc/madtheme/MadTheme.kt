@@ -11,11 +11,8 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Headers
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -25,7 +22,6 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import rx.Observable
-import uy.kohesive.injekt.injectLazy
 import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -43,7 +39,26 @@ abstract class MadTheme(
 
     override val client: OkHttpClient = network.cloudflareClient.newBuilder()
         .rateLimit(1, 1, TimeUnit.SECONDS)
-        .build()
+        .addInterceptor { chain ->
+            val request = chain.request()
+            val url = request.url
+            val response = chain.proceed(request)
+            if (!response.isSuccessful && url.fragment == "image-request") {
+                response.close()
+                val newUrl = url.newBuilder()
+                    .host("sb.mbcdn.xyz")
+                    .encodedPath(url.encodedPath.replaceFirst("/res/", "/"))
+                    .fragment(null)
+                    .build()
+
+                return@addInterceptor chain.proceed(request.newBuilder().url(newUrl).build())
+            }
+            response
+        }.build()
+
+    protected open val useLegacyApi = false
+
+    protected open val useSlugSearch = false
 
     // TODO: better cookie sharing
     // TODO: don't count cached responses against rate limit
@@ -55,41 +70,29 @@ abstract class MadTheme(
         add("Referer", "$baseUrl/")
     }
 
-    private val json: Json by injectLazy()
-
     private var genreKey = "genre[]"
 
     // Popular
-    override fun popularMangaRequest(page: Int): Request =
-        searchMangaRequest(page, "", FilterList(OrderFilter(0)))
+    override fun popularMangaRequest(page: Int): Request = searchMangaRequest(page, "", FilterList(OrderFilter(0)))
 
-    override fun popularMangaParse(response: Response): MangasPage =
-        searchMangaParse(response)
+    override fun popularMangaParse(response: Response): MangasPage = searchMangaParse(response)
 
-    override fun popularMangaSelector(): String =
-        searchMangaSelector()
+    override fun popularMangaSelector(): String = searchMangaSelector()
 
-    override fun popularMangaFromElement(element: Element): SManga =
-        searchMangaFromElement(element)
+    override fun popularMangaFromElement(element: Element): SManga = searchMangaFromElement(element)
 
-    override fun popularMangaNextPageSelector(): String? =
-        searchMangaNextPageSelector()
+    override fun popularMangaNextPageSelector(): String? = searchMangaNextPageSelector()
 
     // Latest
-    override fun latestUpdatesRequest(page: Int): Request =
-        searchMangaRequest(page, "", FilterList(OrderFilter(1)))
+    override fun latestUpdatesRequest(page: Int): Request = searchMangaRequest(page, "", FilterList(OrderFilter(1)))
 
-    override fun latestUpdatesParse(response: Response): MangasPage =
-        searchMangaParse(response)
+    override fun latestUpdatesParse(response: Response): MangasPage = searchMangaParse(response)
 
-    override fun latestUpdatesSelector(): String =
-        searchMangaSelector()
+    override fun latestUpdatesSelector(): String = searchMangaSelector()
 
-    override fun latestUpdatesFromElement(element: Element): SManga =
-        searchMangaFromElement(element)
+    override fun latestUpdatesFromElement(element: Element): SManga = searchMangaFromElement(element)
 
-    override fun latestUpdatesNextPageSelector(): String? =
-        searchMangaNextPageSelector()
+    override fun latestUpdatesNextPageSelector(): String? = searchMangaNextPageSelector()
 
     // Search
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
@@ -108,12 +111,15 @@ abstract class MadTheme(
                             }
                         }
                 }
+
                 is StatusFilter -> {
                     url.addQueryParameter("status", filter.toUriPart())
                 }
+
                 is OrderFilter -> {
                     url.addQueryParameter("sort", filter.toUriPart())
                 }
+
                 else -> {}
             }
         }
@@ -128,7 +134,7 @@ abstract class MadTheme(
         title = element.selectFirst("a")!!.attr("title")
         element.selectFirst(".summary")?.text()?.let { description = it }
         element.select(".genres > *").joinToString { it.text() }.takeIf { it.isNotEmpty() }?.let { genre = it }
-        thumbnail_url = element.selectFirst("img")!!.attr("abs:data-src")
+        thumbnail_url = element.selectFirst("img")!!.attr("abs:data-src") + "#image-request"
     }
 
     /*
@@ -142,7 +148,7 @@ abstract class MadTheme(
         title = document.selectFirst(".detail h1")!!.text()
         author = document.select(".detail .meta > p > strong:contains(Authors) ~ a").joinToString { it.text().trim(',', ' ') }
         genre = document.select(".detail .meta > p > strong:contains(Genres) ~ a").joinToString { it.text().trim(',', ' ') }
-        thumbnail_url = document.selectFirst("#cover img")!!.attr("abs:data-src")
+        thumbnail_url = document.selectFirst("#cover img")!!.attr("abs:data-src") + "#image-request"
 
         val altNames = document.selectFirst(".detail h2")?.text()
             ?.split(',', ';')
@@ -177,30 +183,61 @@ abstract class MadTheme(
     }
 
     override fun chapterListParse(response: Response): List<SChapter> {
-        if (response.code in 200..299) {
+        if (response.request.url.fragment == "idFound") {
             return super.chapterListParse(response)
         }
 
-        // Try to show message/error from site
-        response.body.let { body ->
-            json.decodeFromString<JsonObject>(body.string())["message"]
-                ?.jsonPrimitive
-                ?.content
-                ?.let { throw Exception(it) }
+        val document = response.asJsoup()
+
+        val script = document.selectFirst("script:containsData(bookId)")
+            ?: throw Exception("Cannot find script")
+        val bookId = script.data().substringAfter("bookId = ").substringBefore(";")
+        val bookSlug = script.data().substringAfter("bookSlug = \"").substringBefore("\";")
+
+        var chaptersList = document.select(chapterListSelector()).map { chapterFromElement(it) }
+
+        val fetchApi = document.selectFirst("div#show-more-chapters > span")
+            ?.attr("onclick")?.equals("getChapters()")
+            ?: false
+
+        if (fetchApi) {
+            val apiChapters = client.newCall(GET(buildChapterUrl(bookId, bookSlug), headers)).execute()
+                .asJsoup().select(chapterListSelector()).map { chapterFromElement(it) }
+
+            val cutIndex = chaptersList.indexOfFirst { chapter ->
+                apiChapters.any { it.url == chapter.url }
+            }.takeIf { it != -1 } ?: chaptersList.size
+
+            chaptersList = (chaptersList.subList(0, cutIndex) + apiChapters)
         }
 
-        throw Exception("HTTP error ${response.code}")
+        return chaptersList
     }
 
-    override fun chapterListRequest(manga: SManga): Request =
-        MANGA_ID_REGEX.find(manga.url)?.groupValues?.get(1)?.let { mangaId ->
-            val url = "$baseUrl/service/backend/chaplist/".toHttpUrl().newBuilder()
-                .addQueryParameter("manga_id", mangaId)
-                .addQueryParameter("manga_name", manga.title)
-                .build()
+    private fun buildChapterUrl(mangaId: String, mangaSlug: String): HttpUrl = baseUrl.toHttpUrl().newBuilder().apply {
+        addPathSegment("api")
+        addPathSegment("manga")
+        addPathSegment(if (useSlugSearch) mangaSlug else mangaId)
+        addPathSegment("chapters")
+        addQueryParameter("source", "detail")
+    }.build()
 
-            GET(url, headers)
-        } ?: GET("$baseUrl/api/manga${manga.url}/chapters?source=detail", headers)
+    override fun chapterListRequest(manga: SManga): Request {
+        if (useLegacyApi) {
+            val mangaId = MANGA_ID_REGEX.find(manga.url)?.groupValues?.get(1)
+            val url = mangaId?.let {
+                "$baseUrl/service/backend/chaplist/".toHttpUrl().newBuilder()
+                    .addQueryParameter("manga_id", it)
+                    .addQueryParameter("manga_name", manga.title)
+                    .fragment("idFound")
+                    .build()
+                    .toString()
+            } ?: (baseUrl + manga.url)
+
+            return GET(url, headers)
+        }
+        return GET(baseUrl + manga.url, headers)
+    }
 
     override fun searchMangaParse(response: Response): MangasPage {
         if (genresList == null) {
@@ -252,8 +289,8 @@ abstract class MadTheme(
                 // we've got no choice but to fallback to chapter images from HTML.
                 // TODO: This might need to be solved one day ^
                 if (chapterImagesFromJs.all { e ->
-                    e.startsWith("http://") || e.startsWith("https://")
-                }
+                        e.startsWith("http://") || e.startsWith("https://")
+                    }
                 ) {
                     // Great, we can use these.
                     if (chapterImagesFromHtml.count() < chapterImagesFromJs.count()) {
@@ -289,34 +326,32 @@ abstract class MadTheme(
     }
 
     // Image
-    override fun pageListRequest(chapter: SChapter): Request {
-        return if (chapter.url.toHttpUrlOrNull() != null) {
-            // External chapter
-            GET(chapter.url, headers)
-        } else {
-            super.pageListRequest(chapter)
-        }
+    override fun pageListRequest(chapter: SChapter): Request = if (chapter.url.toHttpUrlOrNull() != null) {
+        // External chapter
+        GET(chapter.url, headers)
+    } else {
+        super.pageListRequest(chapter)
     }
 
-    override fun imageUrlParse(document: Document): String =
-        throw UnsupportedOperationException()
+    override fun imageRequest(page: Page): Request = GET("${page.imageUrl}#image-request", headers)
+
+    override fun imageUrlParse(document: Document): String = throw UnsupportedOperationException()
 
     // Date logic lifted from Madara
     private fun parseChapterDate(date: String?): Long {
         date ?: return 0
 
-        fun SimpleDateFormat.tryParse(string: String): Long {
-            return try {
-                parse(string)?.time ?: 0
-            } catch (_: ParseException) {
-                0
-            }
+        fun SimpleDateFormat.tryParse(string: String): Long = try {
+            parse(string)?.time ?: 0
+        } catch (_: ParseException) {
+            0
         }
 
         return when {
             " ago" in date -> {
                 parseRelativeDate(date)
             }
+
             else -> dateFormat.tryParse(date)
         }
     }
@@ -337,12 +372,10 @@ abstract class MadTheme(
     }
 
     // Dynamic genres
-    private fun parseGenres(document: Document): List<Genre>? {
-        return document.selectFirst(".checkbox-group.genres")?.select(".checkbox-wrapper")?.run {
-            firstOrNull()?.selectFirst("input")?.attr("name")?.takeIf { it.isNotEmpty() }?.let { genreKey = it }
-            map {
-                Genre(it.selectFirst(".radio__label")!!.text(), it.selectFirst("input")!!.`val`())
-            }
+    private fun parseGenres(document: Document): List<Genre>? = document.selectFirst(".checkbox-group.genres")?.select(".checkbox-wrapper")?.run {
+        firstOrNull()?.selectFirst("input")?.attr("name")?.takeIf { it.isNotEmpty() }?.let { genreKey = it }
+        map {
+            Genre(it.selectFirst(".radio__label")!!.text(), it.selectFirst("input")!!.`val`())
         }
     }
 
@@ -368,34 +401,35 @@ abstract class MadTheme(
         return genresList ?: listOf(Genre("Press reset to attempt to fetch genres", ""))
     }
 
-    class StatusFilter : UriPartFilter(
-        "Status",
-        arrayOf(
-            Pair("All", "all"),
-            Pair("Ongoing", "ongoing"),
-            Pair("Completed", "completed"),
-        ),
-    )
+    class StatusFilter :
+        UriPartFilter(
+            "Status",
+            arrayOf(
+                Pair("All", "all"),
+                Pair("Ongoing", "ongoing"),
+                Pair("Completed", "completed"),
+            ),
+        )
 
-    class OrderFilter(state: Int = 0) : UriPartFilter(
-        "Order By",
-        arrayOf(
-            Pair("Views", "views"),
-            Pair("Updated", "updated_at"),
-            Pair("Created", "created_at"),
-            Pair("Name A-Z", "name"),
-            // Pair("Number of Chapters", "total_chapters"),
-            Pair("Rating", "rating"),
-        ),
-        state,
-    )
+    class OrderFilter(state: Int = 0) :
+        UriPartFilter(
+            "Order By",
+            arrayOf(
+                Pair("Views", "views"),
+                Pair("Updated", "updated_at"),
+                Pair("Created", "created_at"),
+                Pair("Name A-Z", "name"),
+                // Pair("Number of Chapters", "total_chapters"),
+                Pair("Rating", "rating"),
+            ),
+            state,
+        )
 
     open class UriPartFilter(
         displayName: String,
         private val vals: Array<Pair<String, String>>,
         state: Int = 0,
-    ) :
-        Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray(), state) {
+    ) : Filter.Select<String>(displayName, vals.map { it.first }.toTypedArray(), state) {
         fun toUriPart() = vals[state].second
     }
 

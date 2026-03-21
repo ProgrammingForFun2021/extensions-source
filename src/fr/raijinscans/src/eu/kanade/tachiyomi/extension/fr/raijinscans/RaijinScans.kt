@@ -1,10 +1,5 @@
 package eu.kanade.tachiyomi.extension.fr.raijinscans
 
-import eu.kanade.tachiyomi.multisrc.madara.Madara
-import java.text.SimpleDateFormat
-import java.util.Locale
+import eu.kanade.tachiyomi.multisrc.raijinscans.RaijinScans
 
-class RaijinScans : Madara("Raijin Scans", "https://raijinscans.net", "fr", dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale.FRENCH)) {
-    override val useNewChapterEndpoint = true
-    override val mangaDetailsSelectorStatus = "div.summary-heading:contains(Statut) + div.summary-content"
-}
+class RaijinScans : RaijinScans("Raijin Scans", "https://raijin-scans.fr", "fr")

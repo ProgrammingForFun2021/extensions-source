@@ -12,15 +12,14 @@ import org.jsoup.nodes.Element
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class HentaiDex : MangaThemesia(
-    "HentaiDex",
-    "https://dexhentai.com",
-    "en",
-    dateFormat = SimpleDateFormat("MMMM d, yyyy", Locale.US),
-    mangaUrlDirectory = "/title",
-) {
-    override fun chapterListParse(response: Response): List<SChapter> =
-        super.chapterListParse(response).sortedByDescending { it.chapter_number }
+class HentaiDex :
+    MangaThemesia(
+        "HentaiDex",
+        "https://dexhentai.com",
+        "en",
+        dateFormat = SimpleDateFormat("MMMM d, yyyy", Locale.US),
+    ) {
+    override fun chapterListParse(response: Response): List<SChapter> = super.chapterListParse(response).sortedByDescending { it.chapter_number }
 
     override fun chapterFromElement(element: Element) = SChapter.create().apply {
         val urlElements = element.select("a")
@@ -32,6 +31,9 @@ class HentaiDex : MangaThemesia(
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val url = baseUrl.toHttpUrl().newBuilder()
+            .addPathSegment(mangaUrlDirectory.substring(1))
+            .addPathSegment("")
+            .addQueryParameter("page", page.toString())
 
         // Can't use filter if is a global search
         if (query.isNotEmpty()) {
@@ -73,6 +75,7 @@ class HentaiDex : MangaThemesia(
                             url.addQueryParameter("genre[]", genre)
                         }
                 }
+
                 // if site has project page, default value "hasProjectPage" = false
                 is ProjectFilter -> {
                     if (filter.selectedValue() == "project-filter-on") {
@@ -80,12 +83,11 @@ class HentaiDex : MangaThemesia(
                     }
                 }
 
-                else -> { /* Do Nothing */
+                else -> {
+                    /* Do Nothing */
                 }
             }
         }
-        url.addPathSegment(mangaUrlDirectory.substring(1))
-            .addQueryParameter("page", page.toString())
         return GET(url.build(), headers)
     }
 

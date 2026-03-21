@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.extension.zh.vomic
 
-import android.app.Application
 import android.util.Base64
 import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
@@ -12,14 +11,13 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import keiyoushi.utils.getPreferences
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.Response
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
 import java.io.IOException
 import java.text.SimpleDateFormat
@@ -28,7 +26,9 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class Vomic : HttpSource(), ConfigurableSource {
+class Vomic :
+    HttpSource(),
+    ConfigurableSource {
 
     override val name = "vomic"
 
@@ -41,7 +41,7 @@ class Vomic : HttpSource(), ConfigurableSource {
     private val apiUrl: String
 
     init {
-        val domain = Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000).getString(DOMAIN_PREF, DEFAULT_DOMAIN)!!
+        val domain = getPreferences().getString(DOMAIN_PREF, DEFAULT_DOMAIN)!!
         if (domain.startsWith("www.") || domain.startsWith("api.")) {
             val tld = domain.substring(4)
             baseUrl = "http://www.$tld"
@@ -53,7 +53,7 @@ class Vomic : HttpSource(), ConfigurableSource {
         }
     }
 
-    override val client = network.client.newBuilder().addInterceptor { chain ->
+    override val client = network.cloudflareClient.newBuilder().addInterceptor { chain ->
         try {
             val response = chain.proceed(chain.request())
             if (response.isSuccessful) {
@@ -102,14 +102,11 @@ class Vomic : HttpSource(), ConfigurableSource {
 
     override fun getMangaUrl(manga: SManga) = "$baseUrl/#/detail?id=${manga.id}"
 
-    override fun mangaDetailsRequest(manga: SManga) =
-        GET("$apiUrl/api/v1/detail/get-comic-detail-data?mid=${manga.id}", headers)
+    override fun mangaDetailsRequest(manga: SManga) = GET("$apiUrl/api/v1/detail/get-comic-detail-data?mid=${manga.id}", headers)
 
-    override fun mangaDetailsParse(response: Response) =
-        response.parseAs<MangaDto>().toSMangaDetails()
+    override fun mangaDetailsParse(response: Response) = response.parseAs<MangaDto>().toSMangaDetails()
 
-    override fun chapterListRequest(manga: SManga) =
-        GET("$apiUrl/api/v1/detail/get-comic-detail-chapter-data?mid=${manga.id}", headers)
+    override fun chapterListRequest(manga: SManga) = GET("$apiUrl/api/v1/detail/get-comic-detail-chapter-data?mid=${manga.id}", headers)
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val chapters: List<ChapterDto> = response.parseAs()
@@ -178,8 +175,7 @@ class Vomic : HttpSource(), ConfigurableSource {
 
     private val json: Json by injectLazy()
 
-    private inline fun <reified T> Response.parseAs(): T =
-        json.decodeFromString<ResponseDto<T>>(body.string()).data
+    private inline fun <reified T> Response.parseAs(): T = json.decodeFromString<ResponseDto<T>>(body.string()).data
 
     companion object {
         private const val DOMAIN_PREF = "DOMAIN"

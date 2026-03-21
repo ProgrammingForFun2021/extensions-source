@@ -1,9 +1,8 @@
 ext {
-    extName = 'Manga Time'
+    extName = 'MangaTime'
     extClass = '.MangaTime'
-    themePkg = 'madara'
-    baseUrl = 'https://mangatime.us'
-    overrideVersionCode = 1
+    baseUrl = 'https://mangatime.org'
+    extVersionCode = 1
     isNsfw = false
 }
 

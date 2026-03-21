@@ -1,6 +1,5 @@
 package eu.kanade.tachiyomi.multisrc.mangathemesia
 
-import android.app.Application
 import android.content.SharedPreferences
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
@@ -9,6 +8,7 @@ import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferencesLazy
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -16,8 +16,6 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import okhttp3.Request
 import okhttp3.Response
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.lang.ref.SoftReference
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -29,19 +27,18 @@ abstract class MangaThemesiaAlt(
     mangaUrlDirectory: String = "/manga",
     dateFormat: SimpleDateFormat = SimpleDateFormat("MMMM dd, yyyy", Locale.US),
     private val randomUrlPrefKey: String = "pref_auto_random_url",
-) : MangaThemesia(name, baseUrl, lang, mangaUrlDirectory, dateFormat), ConfigurableSource {
+) : MangaThemesia(name, baseUrl, lang, mangaUrlDirectory, dateFormat),
+    ConfigurableSource {
 
     protected open val listUrl = "$mangaUrlDirectory/list-mode/"
     protected open val listSelector = "div#content div.soralist ul li a.series"
 
-    protected val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000).also {
-            if (it.contains("__random_part_cache")) {
-                it.edit().remove("__random_part_cache").apply()
-            }
-            if (it.contains("titles_without_random_part")) {
-                it.edit().remove("titles_without_random_part").apply()
-            }
+    protected val preferences by getPreferencesLazy {
+        if (contains("__random_part_cache")) {
+            edit().remove("__random_part_cache").apply()
+        }
+        if (contains("titles_without_random_part")) {
+            edit().remove("titles_without_random_part").apply()
         }
     }
 
@@ -101,12 +98,10 @@ abstract class MangaThemesiaAlt(
         }
     }
 
-    protected fun getUrlMap(cached: Boolean = false): Map<String, String> {
-        return if (cached && cachedValue == null) {
-            preferences.urlMapCache
-        } else {
-            runBlocking { getUrlMapInternal() }
-        }
+    protected fun getUrlMap(cached: Boolean = false): Map<String, String> = if (cached && cachedValue == null) {
+        preferences.urlMapCache
+    } else {
+        runBlocking { getUrlMapInternal() }
     }
 
     // cache in preference for webview urls
@@ -131,17 +126,15 @@ abstract class MangaThemesiaAlt(
         return MangasPage(mangas, mp.hasNextPage)
     }
 
-    protected fun List<SManga>.toPermanentMangaUrls(): List<SManga> {
-        return onEach {
-            val slug = it.url
-                .removeSuffix("/")
-                .substringAfterLast("/")
+    protected fun List<SManga>.toPermanentMangaUrls(): List<SManga> = onEach {
+        val slug = it.url
+            .removeSuffix("/")
+            .substringAfterLast("/")
 
-            val permaSlug = slug
-                .replaceFirst(slugRegex, "")
+        val permaSlug = slug
+            .replaceFirst(slugRegex, "")
 
-            it.url = "$mangaUrlDirectory/$permaSlug/"
-        }
+        it.url = "$mangaUrlDirectory/$permaSlug/"
     }
 
     protected open val slugRegex = Regex("""^(\d+-)""")

@@ -8,24 +8,21 @@ import android.util.Log
 import kotlin.system.exitProcess
 
 class DynastyUrlActivity : Activity() {
+    private val name = javaClass.getSimpleName()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val pathSegments = intent?.data?.pathSegments
-        if (pathSegments != null && pathSegments.size > 1) {
-            val id = pathSegments[1]
-            val mainIntent = Intent().apply {
-                action = "eu.kanade.tachiyomi.SEARCH"
-                putExtra("query", "manga:${pathSegments[0]}:$id")
-                putExtra("filter", packageName)
-            }
 
-            try {
-                startActivity(mainIntent)
-            } catch (e: ActivityNotFoundException) {
-                Log.e("DynastyUrlActivity", e.toString())
-            }
-        } else {
-            Log.e("DynastyUrlActivity", "could not parse uri from intent $intent")
+        val mainIntent = Intent().apply {
+            action = "eu.kanade.tachiyomi.SEARCH"
+            putExtra("query", intent.data.toString())
+            putExtra("filter", packageName)
+        }
+
+        try {
+            startActivity(mainIntent)
+        } catch (e: ActivityNotFoundException) {
+            Log.e(name, "Unable to launch activity", e)
         }
 
         finish()

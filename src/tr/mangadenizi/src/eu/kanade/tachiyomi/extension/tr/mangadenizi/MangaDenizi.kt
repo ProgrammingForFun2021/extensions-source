@@ -11,6 +11,8 @@ import eu.kanade.tachiyomi.util.asJsoup
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -66,7 +68,12 @@ class MangaDenizi : ParsedHttpSource() {
 
     override fun searchMangaSelector() = "Unused"
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList) = GET("$baseUrl/search?query=$query", headers)
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+        val url = "$baseUrl/search".toHttpUrl().newBuilder()
+            .addQueryParameter("query", query)
+            .build()
+        return GET(url, headers)
+    }
 
     override fun searchMangaNextPageSelector() = "Unused"
     override fun searchMangaFromElement(element: Element) = throw UnsupportedOperationException()
@@ -113,11 +120,9 @@ class MangaDenizi : ParsedHttpSource() {
         }
     }
 
-    override fun pageListParse(document: Document): List<Page> {
-        return document.select("img.img-responsive").mapIndexed { i, element ->
-            val url = if (element.hasAttr("data-src")) element.attr("abs:data-src") else element.attr("abs:src")
-            Page(i, "", url)
-        }
+    override fun pageListParse(document: Document): List<Page> = document.select("img.img-responsive").mapIndexed { i, element ->
+        val url = if (element.hasAttr("data-src")) element.attr("abs:data-src") else element.attr("abs:src")
+        Page(i, "", url)
     }
 
     override fun imageUrlParse(document: Document): String = throw UnsupportedOperationException()

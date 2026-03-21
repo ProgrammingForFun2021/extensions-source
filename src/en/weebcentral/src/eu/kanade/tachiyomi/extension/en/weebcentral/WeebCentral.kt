@@ -1,8 +1,10 @@
 package eu.kanade.tachiyomi.extension.en.weebcentral
 
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
+import eu.kanade.tachiyomi.network.asObservableSuccess
+import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
 import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
@@ -12,6 +14,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import rx.Observable
 import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -27,13 +30,15 @@ class WeebCentral : ParsedHttpSource() {
     override val supportsLatest = true
 
     override val client = network.cloudflareClient.newBuilder()
-        .rateLimit(2)
+        .rateLimitHost(baseUrl.toHttpUrl(), 1, 2)
         .build()
 
     override fun headersBuilder() = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ENGLISH)
+
+    private val excludedSearchCharacters = "[!#:(),-]".toRegex()
 
     // ============================== Popular ===============================
 
@@ -65,10 +70,20 @@ class WeebCentral : ParsedHttpSource() {
 
     // =============================== Search ===============================
 
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
+        val pathSegment = query.takeIf { it.startsWith(URL_SEARCH_PREFIX) }
+            ?.removePrefix(URL_SEARCH_PREFIX)
+            ?: return super.fetchSearchManga(page, query, filters)
+
+        return client.newCall(mangaDetailsRequest(SManga.create().apply { url = "/series/$pathSegment" }))
+            .asObservableSuccess()
+            .map { MangasPage(listOf(mangaDetailsParse(it).apply { initialized = true }), false) }
+    }
+
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val filterList = filters.ifEmpty { getFilterList() }
         val url = "$baseUrl/search/data".toHttpUrl().newBuilder().apply {
-            addQueryParameter("text", query)
+            addQueryParameter("text", query.replace(excludedSearchCharacters, " ").trim())
             filterList.filterIsInstance<UriFilter>().forEach {
                 it.addToUri(this)
             }
@@ -80,14 +95,12 @@ class WeebCentral : ParsedHttpSource() {
         return GET(url, headers)
     }
 
-    override fun searchMangaSelector(): String = "article:has(section)"
+    override fun searchMangaSelector(): String = "article > section > a"
 
     override fun searchMangaFromElement(element: Element): SManga = SManga.create().apply {
-        thumbnail_url = element.selectFirst("img")!!.attr("abs:src")
-        with(element.selectFirst("div > a")!!) {
-            title = text()
-            setUrlWithoutDomain(attr("abs:href"))
-        }
+        thumbnail_url = element.sourceImg()
+        title = element.selectFirst("div:not([class]):last-child")!!.text()
+        setUrlWithoutDomain(element.absUrl("href"))
     }
 
     override fun searchMangaNextPageSelector(): String = "button"
@@ -102,34 +115,38 @@ class WeebCentral : ParsedHttpSource() {
         val descBuilder = StringBuilder()
 
         with(document.select("section[x-data] > section")[0]) {
-            thumbnail_url = selectFirst("img")!!.attr("abs:src")
+            thumbnail_url = sourceImg()
             author = select("ul > li:has(strong:contains(Author)) > span > a").joinToString { it.text() }
             genre = select("ul > li:has(strong:contains(Tag),strong:contains(Type)) a").joinToString { it.text() }
             status = selectFirst("ul > li:has(strong:contains(Status)) > a").parseStatus()
-
-            if (selectFirst("ul > li > strong:contains(Official Translation) + a:contains(Yes)") != null) {
-                descBuilder.appendLine("Official Translation")
-                descBuilder.appendLine()
-            }
         }
 
         with(document.select("section[x-data] > section")[1]) {
             title = selectFirst("h1")!!.text()
 
-            val alternateTitles = select("li:has(strong:contains(Associated Name)) li")
-            if (alternateTitles.size > 0) {
-                descBuilder.appendLine("Associated Name(s):")
-                alternateTitles.forEach { descBuilder.appendLine(it.text()) }
-                descBuilder.appendLine()
-            }
-
             descBuilder.append(
                 selectFirst("li:has(strong:contains(Description)) > p")?.text()
                     ?.replace("NOTE: ", "\n\nNOTE: "),
             )
+
+            val relatedSeries = select("li:has(strong:contains(Related Series)) li")
+            if (relatedSeries.size > 0) {
+                descBuilder.append("\n\nRelated Series(s):")
+                relatedSeries.forEach { series ->
+                    descBuilder.append("\n").append("• ${series.text()}")
+                }
+            }
+
+            val alternateTitles = select("li:has(strong:contains(Associated Name)) li")
+            if (alternateTitles.size > 0) {
+                descBuilder.append("\n\nAssociated Name(s):")
+                alternateTitles.forEach { descBuilder.append("\n").append("• ${it.text()}") }
+            }
         }
 
         description = descBuilder.toString()
+
+        setUrlWithoutDomain(document.location())
     }
 
     private fun Element?.parseStatus(): Int = when (this?.text()?.lowercase()) {
@@ -151,7 +168,7 @@ class WeebCentral : ParsedHttpSource() {
         return GET(url, headers)
     }
 
-    override fun chapterListSelector() = "a[x-data]"
+    override fun chapterListSelector() = "div[x-data] > a"
 
     override fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
         name = element.selectFirst("span.flex > span")!!.text()
@@ -159,14 +176,19 @@ class WeebCentral : ParsedHttpSource() {
         element.selectFirst("time[datetime]")?.also {
             date_upload = it.attr("datetime").parseDate()
         }
+        element.selectFirst("svg")?.attr("stroke")?.also { stroke ->
+            scanlator = when (stroke) {
+                "#d8b4fe" -> "Official"
+                "#4C4D54" -> "Unknown"
+                else -> null
+            }
+        }
     }
 
-    private fun String.parseDate(): Long {
-        return try {
-            dateFormat.parse(this)!!.time
-        } catch (_: ParseException) {
-            0L
-        }
+    private fun String.parseDate(): Long = try {
+        dateFormat.parse(this)!!.time
+    } catch (_: ParseException) {
+        0L
     }
     // =============================== Pages ================================
 
@@ -183,18 +205,13 @@ class WeebCentral : ParsedHttpSource() {
         return GET(newUrl, headers)
     }
 
-    override fun getChapterUrl(chapter: SChapter): String {
-        return baseUrl + chapter.url
+    override fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url
+
+    override fun pageListParse(document: Document): List<Page> = document.select("section[x-data~=scroll] > img").mapIndexed { index, element ->
+        Page(index, imageUrl = element.attr("abs:src"))
     }
 
-    override fun pageListParse(document: Document): List<Page> {
-        return document.select("section[x-data~=scroll] > img").mapIndexed { index, element ->
-            Page(index, imageUrl = element.attr("abs:src"))
-        }
-    }
-
-    override fun imageUrlParse(document: Document) =
-        throw UnsupportedOperationException()
+    override fun imageUrlParse(document: Document) = throw UnsupportedOperationException()
 
     override fun imageRequest(page: Page): Request {
         val imgHeaders = headersBuilder().apply {
@@ -207,6 +224,9 @@ class WeebCentral : ParsedHttpSource() {
 
     // ============================= Utilities ==============================
 
+    private fun Element.sourceImg(): String? = selectFirst("source")?.attr("srcset")?.replace("small", "normal")
+        ?: selectFirst("img")?.absUrl("src")
+
     private fun defaultFilterList(sortFilter: SortFilter): FilterList = FilterList(
         sortFilter,
         SortOrderFilter(),
@@ -217,6 +237,9 @@ class WeebCentral : ParsedHttpSource() {
     )
 
     companion object {
-        const val FETCH_LIMIT = 24
+        // The related "&limit=" query parameter of the api is currently non functional
+        // and always returns 32 entries per request
+        const val FETCH_LIMIT = 32
+        const val URL_SEARCH_PREFIX = "id:"
     }
 }

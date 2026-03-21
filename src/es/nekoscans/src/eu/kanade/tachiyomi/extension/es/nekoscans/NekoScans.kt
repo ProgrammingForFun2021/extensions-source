@@ -1,22 +1,21 @@
 package eu.kanade.tachiyomi.extension.es.nekoscans
 
-import eu.kanade.tachiyomi.multisrc.zeistmanga.ZeistManga
+import eu.kanade.tachiyomi.multisrc.mangathemesia.MangaThemesia
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
-import java.util.concurrent.TimeUnit
+import java.text.SimpleDateFormat
+import java.util.Locale
 
-class NekoScans : ZeistManga(
-    "NekoScans",
-    "https://nekoscanlationlector.blogspot.com",
-    "es",
-) {
-    // Theme changed from MangaThemesia to ZeistManga
-    override val versionId = 2
+class NekoScans :
+    MangaThemesia(
+        "NekoScans",
+        "https://nekoproject.org",
+        "es",
+        dateFormat = SimpleDateFormat("MMMM dd, yyyy", Locale("es")),
+    ) {
+    // Theme changed from ZeistManga to MangaThemesia
+    override val versionId = 3
 
     override val client = super.client.newBuilder()
-        .rateLimit(2, 1, TimeUnit.SECONDS)
+        .rateLimit(2)
         .build()
-
-    override val excludedCategories = listOf("Anime", "Novel")
-
-    override val pageListSelector = "div#readarea img"
 }

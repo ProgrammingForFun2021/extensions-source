@@ -13,7 +13,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
-import eu.kanade.tachiyomi.lib.i18n.Intl
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.ConfigurableSource
@@ -24,6 +23,8 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.lib.i18n.Intl
+import keiyoushi.utils.getPreferencesLazy
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl
@@ -45,7 +46,8 @@ open class Comikey(
     override val name: String = "Comikey",
     override val baseUrl: String = "https://comikey.com",
     private val defaultLanguage: String = "en",
-) : ParsedHttpSource(), ConfigurableSource {
+) : ParsedHttpSource(),
+    ConfigurableSource {
 
     private val gundamUrl: String = "https://gundam.comikey.net"
 
@@ -75,9 +77,7 @@ open class Comikey(
         classLoader = this::class.java.classLoader!!,
     )
 
-    private val preferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
+    private val preferences by getPreferencesLazy()
 
     override fun popularMangaRequest(page: Int) = GET("$baseUrl/comics/?order=-views&page=$page", headers)
 
@@ -99,16 +99,14 @@ open class Comikey(
         page: Int,
         query: String,
         filters: FilterList,
-    ): Observable<MangasPage> {
-        return if (query.startsWith(PREFIX_SLUG_SEARCH)) {
-            val slug = query.removePrefix(PREFIX_SLUG_SEARCH)
-            val url = "/comics/$slug/"
+    ): Observable<MangasPage> = if (query.startsWith(PREFIX_SLUG_SEARCH)) {
+        val slug = query.removePrefix(PREFIX_SLUG_SEARCH)
+        val url = "/comics/$slug/"
 
-            fetchMangaDetails(SManga.create().apply { this.url = url })
-                .map { MangasPage(listOf(it), false) }
-        } else {
-            super.fetchSearchManga(page, query, filters)
-        }
+        fetchMangaDetails(SManga.create().apply { this.url = url })
+            .map { MangasPage(listOf(it), false) }
+    } else {
+        super.fetchSearchManga(page, query, filters)
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
@@ -165,9 +163,14 @@ open class Comikey(
                     listOf("em pausa", "hiato").any { data.updateText.startsWith(it, true) } -> SManga.ON_HIATUS
                     else -> SManga.UNKNOWN
                 }
+
                 1 -> SManga.COMPLETED
+
                 3 -> SManga.ON_HIATUS
-                in (4..14) -> SManga.ONGOING // daily, weekly, bi-weekly, monthly, every day of the week
+
+                in (4..14) -> SManga.ONGOING
+
+                // daily, weekly, bi-weekly, monthly, every day of the week
                 else -> SManga.UNKNOWN
             }
             genre = buildList(data.tags.size + 1) {
@@ -246,10 +249,8 @@ open class Comikey(
 
     override fun chapterFromElement(element: Element) = throw UnsupportedOperationException()
 
-    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        return Observable.fromCallable {
-            pageListParse(chapter)
-        }
+    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> = Observable.fromCallable {
+        pageListParse(chapter)
     }
 
     override fun pageListParse(document: Document) = throw UnsupportedOperationException()
@@ -457,9 +458,7 @@ open class Comikey(
 
         @JavascriptInterface
         @Suppress("UNUSED")
-        fun gettext(key: String): String {
-            return intl[key]
-        }
+        fun gettext(key: String): String = intl[key]
 
         @JavascriptInterface
         @Suppress("UNUSED")

@@ -31,7 +31,7 @@ class Kiutaku : ParsedHttpSource() {
     override val supportsLatest = true
 
     override val client by lazy {
-        network.client.newBuilder()
+        network.cloudflareClient.newBuilder()
             .rateLimitHost(baseUrl.toHttpUrl(), 2)
             .build()
     }
@@ -61,15 +61,13 @@ class Kiutaku : ParsedHttpSource() {
     override fun latestUpdatesNextPageSelector() = popularMangaNextPageSelector()
 
     // =============================== Search ===============================
-    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return if (query.startsWith(PREFIX_SEARCH)) { // URL intent handler
-            val id = query.removePrefix(PREFIX_SEARCH)
-            client.newCall(GET("$baseUrl/$id"))
-                .asObservableSuccess()
-                .map(::searchMangaByIdParse)
-        } else {
-            super.fetchSearchManga(page, query, filters)
-        }
+    override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> = if (query.startsWith(PREFIX_SEARCH)) { // URL intent handler
+        val id = query.removePrefix(PREFIX_SEARCH)
+        client.newCall(GET("$baseUrl/$id"))
+            .asObservableSuccess()
+            .map(::searchMangaByIdParse)
+    } else {
+        super.fetchSearchManga(page, query, filters)
     }
 
     private fun searchMangaByIdParse(response: Response): MangasPage {
@@ -78,7 +76,12 @@ class Kiutaku : ParsedHttpSource() {
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        return GET("$baseUrl/?search=$query&start=${getPage(page)}", headers)
+        val url = baseUrl.toHttpUrl().newBuilder()
+            .addQueryParameter("search", query)
+            .addQueryParameter("start", getPage(page).toString())
+            .build()
+
+        return GET(url, headers)
     }
 
     override fun searchMangaSelector() = popularMangaSelector()
@@ -100,8 +103,7 @@ class Kiutaku : ParsedHttpSource() {
 
     // ============================== Chapters ==============================
     // Fix chapter order
-    override fun chapterListParse(response: Response) =
-        super.chapterListParse(response).reversed()
+    override fun chapterListParse(response: Response) = super.chapterListParse(response).reversed()
 
     override fun chapterListSelector() = "nav.pagination:first-of-type a"
 
@@ -113,15 +115,11 @@ class Kiutaku : ParsedHttpSource() {
     }
 
     // =============================== Pages ================================
-    override fun pageListParse(document: Document): List<Page> {
-        return document.select("div.article-fulltext img[src]").mapIndexed { index, item ->
-            Page(index, "", item.attr("src"))
-        }
+    override fun pageListParse(document: Document): List<Page> = document.select("div.article-fulltext img[src]").mapIndexed { index, item ->
+        Page(index, "", item.attr("src"))
     }
 
-    override fun imageUrlParse(document: Document): String {
-        throw UnsupportedOperationException()
-    }
+    override fun imageUrlParse(document: Document): String = throw UnsupportedOperationException()
 
     companion object {
         const val PREFIX_SEARCH = "id:"

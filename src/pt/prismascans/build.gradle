@@ -1,9 +1,0 @@
-ext {
-    extName = 'Seita Celestial'
-    extClass = '.SeitaCelestial'
-    themePkg = 'mangathemesia'
-    baseUrl = 'https://seitacelestial.com'
-    overrideVersionCode = 18
-}
-
-apply from: "$rootDir/common.gradle"

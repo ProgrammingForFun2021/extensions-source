@@ -1,12 +1,6 @@
 package eu.kanade.tachiyomi.extension.es.plottwistnofansub
 
-import android.app.Application
-import android.content.SharedPreferences
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.lib.randomua.addRandomUAPreferenceToScreen
-import eu.kanade.tachiyomi.lib.randomua.getPrefCustomUA
-import eu.kanade.tachiyomi.lib.randomua.getPrefUAType
-import eu.kanade.tachiyomi.lib.randomua.setRandomUserAgent
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
@@ -19,10 +13,10 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
-import kotlinx.serialization.decodeFromString
+import keiyoushi.lib.randomua.addRandomUAPreference
+import keiyoushi.lib.randomua.setRandomUserAgent
 import kotlinx.serialization.json.Json
 import okhttp3.FormBody
-import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -32,11 +26,11 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.Entities
 import org.jsoup.select.Elements
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
 
-class PlotTwistNoFansub : ParsedHttpSource(), ConfigurableSource {
+class PlotTwistNoFansub :
+    ParsedHttpSource(),
+    ConfigurableSource {
 
     override val name = "Plot Twist No Fansub"
 
@@ -48,23 +42,17 @@ class PlotTwistNoFansub : ParsedHttpSource(), ConfigurableSource {
 
     private val json: Json by injectLazy()
 
-    private val preferences: SharedPreferences =
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x000)
-
     override val client: OkHttpClient = network.cloudflareClient.newBuilder()
-        .setRandomUserAgent(
-            preferences.getPrefUAType(),
-            preferences.getPrefCustomUA(),
-        )
         .rateLimitHost(baseUrl.toHttpUrl(), 1)
         .build()
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        addRandomUAPreferenceToScreen(screen)
+        screen.addRandomUAPreference()
     }
 
-    override fun headersBuilder(): Headers.Builder = Headers.Builder()
+    override fun headersBuilder() = super.headersBuilder()
         .add("Referer", "$baseUrl/")
+        .setRandomUserAgent()
 
     override fun popularMangaRequest(page: Int): Request = GET(baseUrl, headers)
 
@@ -136,6 +124,8 @@ class PlotTwistNoFansub : ParsedHttpSource(), ConfigurableSource {
         }
     }
 
+    override fun getMangaUrl(manga: SManga) = "$baseUrl${manga.url}"
+
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
 
@@ -191,7 +181,7 @@ class PlotTwistNoFansub : ParsedHttpSource(), ConfigurableSource {
         val script = document.select("script")
             .map(Element::data)
             .firstNotNullOf(CHAPTER_PAGES_REGEX::find)
-        val result = json.decodeFromString<PagesPayloadDto>(script.groups["json"]!!.value)
+        val result = json.decodeFromString<PagesPayloadDto>(script.groups[1]!!.value)
         val mangaSlug = "${result.cdnUrl}/${result.mangaSlug}"
         val chapterNumber = result.chapterNumber
         return result.images.mapIndexed { i, img ->
@@ -201,26 +191,20 @@ class PlotTwistNoFansub : ParsedHttpSource(), ConfigurableSource {
 
     override fun imageUrlParse(document: Document): String = throw UnsupportedOperationException()
 
-    override fun getFilterList(): FilterList {
-        return FilterList(
-            Filter.Header("Haga click en \"Filtrar\" para ver todos los mangas."),
-        )
-    }
+    override fun getFilterList(): FilterList = FilterList(
+        Filter.Header("Haga click en \"Filtrar\" para ver todos los mangas."),
+    )
 
-    private fun Element.imgAttr(): String {
-        return when {
-            this.hasAttr("data-src") -> this.attr("abs:data-src")
-            this.hasAttr("data-lazy-src") -> this.attr("abs:data-lazy-src")
-            this.hasAttr("srcset") -> this.attr("abs:srcset").substringBefore(" ")
-            else -> this.attr("abs:src")
-        }
+    private fun Element.imgAttr(): String = when {
+        this.hasAttr("data-src") -> this.attr("abs:data-src")
+        this.hasAttr("data-lazy-src") -> this.attr("abs:data-lazy-src")
+        this.hasAttr("srcset") -> this.attr("abs:srcset").substringBefore(" ")
+        else -> this.attr("abs:src")
     }
 
     private fun Elements.imgAttr(): String = this.first()!!.imgAttr()
 
-    private fun String.unescape(): String {
-        return UNESCAPE_REGEX.replace(this, "$1")
-    }
+    private fun String.unescape(): String = UNESCAPE_REGEX.replace(this, "$1")
 
     private fun getKey(document: Document): String {
         val customPriorityWant = listOf("custom")
@@ -260,7 +244,7 @@ class PlotTwistNoFansub : ParsedHttpSource(), ConfigurableSource {
     companion object {
         private val MANGAID1_REGEX = ""","manid":"(\d+)",""".toRegex()
         private val UNESCAPE_REGEX = """\\(.)""".toRegex()
-        private val CHAPTER_PAGES_REGEX = """obj\s*=\s*(?<json>.*)\s*;""".toRegex()
+        private val CHAPTER_PAGES_REGEX = """obj\s*=\s*(.*)\s*;""".toRegex()
         private val ACTION_REGEX = """action:\s*?(['"])([^\r\n]+?)\1""".toRegex()
         private const val MAX_MANGA_RESULTS = 1000
     }

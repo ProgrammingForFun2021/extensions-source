@@ -1,9 +1,8 @@
 ext {
     extName = 'AnimeXNovel'
     extClass = '.AnimeXNovel'
-    themePkg = 'zeistmanga'
-    baseUrl = 'https://www.animexnovel.com'
-    overrideVersionCode = 1
+    extVersionCode = 15
+    isNsfw = false
 }
 
 apply from: "$rootDir/common.gradle"
