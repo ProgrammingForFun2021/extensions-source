@@ -34,7 +34,9 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
-class HotManga : ConfigurableSource, HttpSource() {
+class HotManga :
+    HttpSource(),
+    ConfigurableSource {
 
     override val id = 2073023199372375753
 
@@ -44,11 +46,7 @@ class HotManga : ConfigurableSource, HttpSource() {
 
     private val baseOrig: String = "https://hotmanga.me"
 
-    private val baseMirr: String = "https://xn--80aaaklzpjd4c4a.xn--p1ai" // https://мангахентай.рф
-
     private val baseMirrSecond: String = "https://xn--80aaalhzvfe9b4a.xn--80asehdb" // https://хентайманга.онлайн
-
-    private val baseMirrThird: String = "https://xn--80aanrbklcdf5b7a.xn--p1ai" // https://хентайонлайн.рф
 
     private val apiPath = "/api"
 
@@ -66,9 +64,7 @@ class HotManga : ConfigurableSource, HttpSource() {
 
     private val apiPathsMap = mapOf(
         baseOrig to apiPath,
-        baseMirr to "/api-frontend",
         baseMirrSecond to apiPath,
-        baseMirrThird to apiPath,
     )
 
     override val client = network.cloudflareClient.newBuilder()
@@ -84,6 +80,8 @@ class HotManga : ConfigurableSource, HttpSource() {
     private val json: Json = Json {
         ignoreUnknownKeys = true
         coerceInputValues = true
+        explicitNulls = false
+        encodeDefaults = true
     }
 
     override fun popularMangaRequest(page: Int): Request {
@@ -119,19 +117,16 @@ class HotManga : ConfigurableSource, HttpSource() {
         return baseUrl + cleanMangaUrlFromBookIdParameter(manga.url)
     }
 
-    private fun MangaDto.toSManga(): SManga =
-        SManga.create().apply {
-            title = titleEn ?: slug
-            url = "/manga/$slug?bookId=$id" // TODO Use HttpUrlBuilder to escape arguments properly.
-            // Original host does not work for some locations. Cloudflare protection. Need to change domain.
-            // Parameters w and q need to be calculated.
-            thumbnail_url = "$baseMirrThird/_next/image?url=$baseMirrThird$imageHigh&w=768&q=75"
-            description = desc?.trim()
-        }
+    private fun MangaDto.toSManga(): SManga = SManga.create().apply {
+        title = titleEn ?: slug
+        url = "/manga/$slug?bookId=$id" // TODO Use HttpUrlBuilder to escape arguments properly.
+        // Original host does not work for some locations. Cloudflare protection. Need to change domain.
+        // Parameters w and q need to be calculated.
+        thumbnail_url = "$baseMirrSecond/_next/image?url=$baseMirrSecond$imageHigh&w=768&q=75"
+        description = desc?.trim()
+    }
 
     override fun chapterListParse(response: Response): List<SChapter> = throw NotImplementedError("Unused")
-
-    override fun imageUrlParse(response: Response): String = throw NotImplementedError("Unused")
 
     override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
 
@@ -142,9 +137,23 @@ class HotManga : ConfigurableSource, HttpSource() {
         return GET("${baseUrl}$apiString", headers)
     }
 
-    override fun mangaDetailsParse(response: Response): SManga = throw NotImplementedError("Unused")
+    override fun mangaDetailsRequest(manga: SManga): Request {
+        val url = cleanMangaUrlFromBookIdParameter(manga.url)
+        return GET("${baseUrl}$url", headers)
+    }
 
-    override fun pageListParse(response: Response): List<Page> = throw NotImplementedError("Unused")
+    override fun mangaDetailsParse(response: Response): SManga {
+        val document = response.asJsoup()
+
+        return SManga.create().apply {
+            setUrlWithoutDomain(response.request.url.toString())
+            title = document.selectFirst("body > div.min-h-\\[calc\\(100vh_-_48px\\)\\].h-full.max-md\\:mt-11.grid.m-auto.md\\:max-w-7xl.w-full.md\\:px-4 > div > div.grid.content-start.max-md\\:relative.md\\:w-\\[300px\\].before\\:inset-0.before\\:z-10.md\\:before\\:z-\\[-1\\].md\\:before\\:content-none.before\\:w-full.before\\:absolute.before\\:min-h-full.bg-book-pattern > div.grid.gap-y-3.max-md\\:p-3.max-md\\:pb-4.z-10.content-start > div.max-md\\:contents.pt-4.absolute.grid.md\\:items-center.grid-flow-col.grid-cols-\\[1fr_auto\\].top-0.left-\\[calc\\(300px_\\+_1\\.5rem\\)\\].right-0 > div.grid.md\\:order-1.max-md\\:mt-2.max-md\\:text-center > h2")!!.text()
+            thumbnail_url = document.selectFirst("body > div.min-h-\\[calc\\(100vh_-_48px\\)\\].h-full.max-md\\:mt-11.grid.m-auto.md\\:max-w-7xl.w-full.md\\:px-4 > div > div.grid.content-start.max-md\\:relative.md\\:w-\\[300px\\].before\\:inset-0.before\\:z-10.md\\:before\\:z-\\[-1\\].md\\:before\\:content-none.before\\:w-full.before\\:absolute.before\\:min-h-full.bg-book-pattern > div.md\\:rounded.md\\:relative.max-md\\:\\!absolute.max-md\\:top-0.max-md\\:w-full.md\\:\\[\\&_\\>_div\\]\\:rounded.dark\\:bg-black-700.bg-white.max-md\\:\\[\\&_\\>_img\\]\\:blur-\\[3px\\].md\\:h-\\[435px\\].max-md\\:h-full > img")?.absUrl("src")
+            description = document.selectFirst("body > div.min-h-\\[calc\\(100vh_-_48px\\)\\].h-full.max-md\\:mt-11.grid.m-auto.md\\:max-w-7xl.w-full.md\\:px-4 > div > div.md\\:mt-\\[4\\.75rem\\].grid.grid-cols-1.lg\\:grid-cols-3.gap-4 > div.grid.ring-1.dark\\:ring-black-500.ring-gray-200.content-start.bg-white.dark\\:bg-black-600.md\\:rounded.lg\\:col-span-2 > div.px-3.md\\:px-4.mt-4 > div > div")?.text()
+            genre = ""
+            author = ""
+        }
+    }
 
     override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
 
@@ -158,40 +167,32 @@ class HotManga : ConfigurableSource, HttpSource() {
     override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
         val chapters = mutableListOf<SChapter>()
         val mangaUrl = manga.url
-        val urlObj = mangaUrl.toHttpUrlOrNull()
+        val urlObj = "$baseUrl$mangaUrl".toHttpUrlOrNull()
         val bookId = urlObj?.queryParameter("bookId")
         val apiPathVal = apiPathsMap[baseUrl]
-        val urlBase = "$baseUrl$apiPathVal/chapters/with-branches?filter%5BbookId%5D=$bookId"
+        val urlBase = "$baseUrl$apiPathVal/chapters/list?filter%5BbookId%5D=$bookId"
         val request = GET(urlBase.toHttpUrl(), headers)
         val body = client.newCall(request).execute().body.string()
         val values = json.parseToJsonElement(body).jsonArray
         for (item in values) {
             // TODO Use a DTO instead of this.
-            val number = item.jsonObject["number"].toString().replace("\"", "").toFloat()
+            val number = item.jsonObject["number"].toString().replace("\"", "")
             val createdAt = item.jsonObject["createdAt"]?.jsonPrimitive?.content
-            val tom = item.jsonObject["tom"]?.jsonPrimitive?.content
+            val volume = item.jsonObject["volume"]?.jsonPrimitive?.content
             val id = item.jsonObject["id"].toString()
-            val chapterBranches = item.jsonObject["chapterBranches"]?.jsonArray
-            var branchId = "0"
-            var isSubscription = false
-            if (chapterBranches != null) {
-                branchId = chapterBranches[0].jsonObject["branchId"].toString()
-                isSubscription =
-                    chapterBranches[0].jsonObject["isSubscription"]?.jsonPrimitive?.content.toBoolean()
-            }
+            val isSubscription = item.jsonObject["isSubscription"]?.jsonPrimitive?.content.toBoolean()
             val cleanUrl = cleanMangaUrlFromBookIdParameter(mangaUrl)
-            val chapterUrl = "$cleanUrl/ch$id?branchId=$branchId"
+            val chapterUrl = "$cleanUrl/ch$id"
             val parseDate = parseDate(createdAt)
-            var chapterName = "$tom. Глава $number"
+            var chapterName = "$volume. Глава $number"
             if (isSubscription) {
                 chapterName += paidSymbol
             }
-            // TODO Use setUrlWithoutDomain() to allow for easier domain swapping in the future.
             val sChapter = SChapter.create().apply {
-                url = chapterUrl
+                setUrlWithoutDomain(chapterUrl)
                 name = chapterName
                 date_upload = parseDate
-                chapter_number = number
+                chapter_number = number.toFloat()
             }
             chapters.add(sChapter)
         }
@@ -214,10 +215,14 @@ class HotManga : ConfigurableSource, HttpSource() {
         }
     }
 
-    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        val list = mutableListOf<Page>()
+    override fun pageListRequest(chapter: SChapter): Request {
         val pageUrl = "$baseUrl${chapter.url}"
-        val chapterPage = client.newCall(GET(pageUrl.toHttpUrl(), headers)).execute().asJsoup()
+        return GET(pageUrl.toHttpUrl(), headers)
+    }
+
+    override fun pageListParse(response: Response): List<Page> {
+        val list = mutableListOf<Page>()
+        val chapterPage = response.asJsoup()
         val elements = chapterPage.select("div.relative")
         for (elem in elements) {
             val imgElem = elem.select("img")
@@ -226,10 +231,12 @@ class HotManga : ConfigurableSource, HttpSource() {
                 list.add(Page(list.size, "", imgSrc))
             }
         }
-        return Observable.just(list)
+        return list
     }
 
-    override fun fetchImageUrl(page: Page): Observable<String> = Observable.just(page.imageUrl!!)
+    override fun imageRequest(page: Page): Request = GET(page.imageUrl!!)
+
+    override fun imageUrlParse(response: Response): String = ""
 
     private fun cleanMangaUrlFromBookIdParameter(url: String) = url.split("?")[0]
 
@@ -237,8 +244,8 @@ class HotManga : ConfigurableSource, HttpSource() {
         ListPreference(screen.context).apply {
             key = DOMAIN_PREF
             title = "Выбор домена"
-            entries = arrayOf("Основной (hotmanga.me)", "Зеркало (мангахентай.рф)", "Зеркало 2 (хентайманга.онлайн)", "Зеркало 3 (хентайонлайн.рф)")
-            entryValues = arrayOf(baseOrig, baseMirr, baseMirrSecond, baseMirrThird)
+            entries = arrayOf("Основной (hotmanga.me)", "Зеркало 2 (хентайманга.онлайн)")
+            entryValues = arrayOf(baseOrig, baseMirrSecond)
             summary = "%s"
             setDefaultValue(baseOrig)
             setOnPreferenceChangeListener { _, newValue ->
