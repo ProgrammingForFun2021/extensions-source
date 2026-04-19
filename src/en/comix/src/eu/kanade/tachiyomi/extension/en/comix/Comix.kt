@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
+import eu.kanade.tachiyomi.extension.en.comix.Hash.generateHash
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
 import eu.kanade.tachiyomi.source.ConfigurableSource
@@ -16,6 +17,7 @@ import eu.kanade.tachiyomi.source.online.HttpSource
 import keiyoushi.utils.getPreferences
 import keiyoushi.utils.parseAs
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 
@@ -25,7 +27,7 @@ class Comix :
 
     override val name = "Comix"
     override val baseUrl = "https://comix.to"
-    private val apiUrl = "https://comix.to/api/v2/"
+    private val apiUrl = "https://comix.to/api/v2"
     override val lang = "en"
     override val supportsLatest = true
 
@@ -38,7 +40,7 @@ class Comix :
 
     override fun imageUrlParse(response: Response) = throw UnsupportedOperationException()
 
-    /******************************* POPULAR MANGA ************************************/
+    // ========================= Popular =========================
     override fun popularMangaRequest(page: Int): Request {
         val url = apiUrl.toHttpUrl().newBuilder().apply {
             addPathSegment("manga")
@@ -58,7 +60,7 @@ class Comix :
 
     override fun popularMangaParse(response: Response) = searchMangaParse(response)
 
-    /******************************* LATEST MANGA ************************************/
+    // ========================= Latest =========================
     override fun latestUpdatesRequest(page: Int): Request {
         val url = apiUrl.toHttpUrl().newBuilder().apply {
             addPathSegment("manga")
@@ -78,14 +80,23 @@ class Comix :
 
     override fun latestUpdatesParse(response: Response) = searchMangaParse(response)
 
-    /******************************* SEARCHING ***************************************/
-    override fun getFilterList() = ComixFilters().getFilterList()
-
+    // ========================= Search =========================
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+        if (query.isNotBlank()) {
+            val queryUrl = query.trim().toHttpUrlOrNull()
+            if (queryUrl != null) {
+                val host = queryUrl.host.removePrefix("www.")
+                if (host == baseUrl.toHttpUrl().host.removePrefix("www.") && queryUrl.pathSegments.size >= 2 && queryUrl.pathSegments[0] == "title") {
+                    val mangaId = queryUrl.pathSegments[1].substringBefore("-")
+                    return mangaDetailsRequest(SManga.create().apply { this.url = "/$mangaId" })
+                }
+            }
+        }
+
         val url = apiUrl.toHttpUrl().newBuilder().apply {
             addPathSegment("manga")
 
-            filters.filterIsInstance<ComixFilters.UriFilter>()
+            filters.filterIsInstance<Filters.UriFilter>()
                 .forEach { it.addToUri(this) }
 
             // Make searches accurate
@@ -109,15 +120,26 @@ class Comix :
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
-        val res: SearchResponse = response.parseAs()
         val posterQuality = preferences.posterQuality()
 
-        val manga =
-            res.result.items.map { manga -> manga.toBasicSManga(posterQuality) }
-        return MangasPage(manga, res.result.pagination.page < res.result.pagination.lastPage)
+        val pathSegments = response.request.url.pathSegments
+        val mangaIdx = pathSegments.indexOf("manga")
+
+        if (mangaIdx != -1 && pathSegments.size > mangaIdx + 1 && !pathSegments.contains("chapters")) {
+            val res: SingleMangaResponse = response.parseAs()
+            val manga = listOf(res.result.toBasicSManga(posterQuality))
+            return MangasPage(manga, false)
+        } else {
+            val res: SearchResponse = response.parseAs()
+            val manga = res.result.items.map { it.toBasicSManga(posterQuality) }
+            return MangasPage(manga, res.result.pagination.page < res.result.pagination.lastPage)
+        }
     }
 
-    /******************************* MANGA DETAILS ***************************************/
+    // ========================= Filters =========================
+    override fun getFilterList() = Filters().getFilterList()
+
+    // ========================= Details =========================
     override fun mangaDetailsRequest(manga: SManga): Request {
         val url = apiUrl.toHttpUrl().newBuilder()
             .addPathSegment("manga")
@@ -143,14 +165,15 @@ class Comix :
         )
     }
 
-    override fun getMangaUrl(manga: SManga): String = "$baseUrl/title${manga.url}"
-
-    /******************************* Chapters List *******************************/
+    // ========================= Chapters =========================
     override fun getChapterUrl(chapter: SChapter) = "$baseUrl/${chapter.url}"
 
     override fun chapterListRequest(manga: SManga): Request = chapterListRequest(manga.url.removePrefix("/"), 1)
 
     private fun chapterListRequest(mangaHash: String, page: Int): Request {
+        val path = "/manga/$mangaHash/chapters"
+        val time = 1L
+        val hashToken = generateHash(path, 0, time)
         val url = apiUrl.toHttpUrl().newBuilder()
             .addPathSegment("manga")
             .addPathSegment(mangaHash)
@@ -158,6 +181,8 @@ class Comix :
             .addQueryParameter("order[number]", "desc")
             .addQueryParameter("limit", "100")
             .addQueryParameter("page", page.toString())
+            .addQueryParameter("time", time.toString())
+            .addQueryParameter("_", hashToken)
             .build()
 
         return GET(url, headers)
@@ -209,6 +234,8 @@ class Comix :
         return finalChapters.map { it.toSChapter(mangaHash) }
     }
 
+    override fun getMangaUrl(manga: SManga): String = "$baseUrl/title${manga.url}"
+
     private fun deduplicateChapters(
         chapterMap: LinkedHashMap<Number, Chapter>,
         items: List<Chapter>,
@@ -219,13 +246,20 @@ class Comix :
             if (current == null) {
                 chapterMap[key] = ch
             } else {
-                // Prefer official scan group
-                val officialNew = (ch.scanlationGroupId == 9275 || ch.isOfficial == 1)
-                val officialCurrent = (current.scanlationGroupId == 9275 || current.isOfficial == 1)
-                val better = when {
-                    officialNew && !officialCurrent -> true
+                // Prefer official flag first, then "Official?" group, then votes/updatedAt
+                val newIsOfficial = ch.isOfficial == 1
+                val currentIsOfficial = current.isOfficial == 1
+                val newIsGroup10702 = ch.scanlationGroupId == 10702
+                val currentIsGroup10702 = current.scanlationGroupId == 10702
 
-                    !officialNew && officialCurrent -> false
+                val better = when {
+                    // Prefer official-marked chapters
+                    newIsOfficial && !currentIsOfficial -> true
+                    !newIsOfficial && currentIsOfficial -> false
+
+                    // If neither official, prefer group "Official?"
+                    newIsGroup10702 && !currentIsGroup10702 -> true
+                    !newIsGroup10702 && currentIsGroup10702 -> false
 
                     // compare votes then updatedAt
                     else -> when {
@@ -239,10 +273,13 @@ class Comix :
         }
     }
 
-    /******************************* Page List (Reader) ************************************/
+    // ========================= Pages =========================
     override fun pageListRequest(chapter: SChapter): Request {
         val chapterId = chapter.url.substringAfterLast("/")
-        val url = "${apiUrl}chapters/$chapterId"
+        val url = apiUrl.toHttpUrl().newBuilder()
+            .addPathSegment("chapters")
+            .addPathSegment(chapterId)
+            .build()
         return GET(url, headers)
     }
 
@@ -259,7 +296,7 @@ class Comix :
         }
     }
 
-    /******************************* PREFERENCES ************************************/
+    // ========================= Settings =========================
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         ListPreference(screen.context).apply {
             key = PREF_POSTER_QUALITY

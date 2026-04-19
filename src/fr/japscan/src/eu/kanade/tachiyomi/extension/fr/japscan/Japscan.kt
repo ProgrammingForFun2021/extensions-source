@@ -1,6 +1,8 @@
 package eu.kanade.tachiyomi.extension.fr.japscan
 
 import android.app.Application
+import android.content.ComponentName
+import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.os.Handler
@@ -9,6 +11,8 @@ import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.preference.ListPreference
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
@@ -23,7 +27,6 @@ import eu.kanade.tachiyomi.source.online.ParsedHttpSource
 import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -70,6 +73,8 @@ class Japscan :
     override val client: OkHttpClient = network.cloudflareClient.newBuilder()
         .rateLimit(1, 2)
         .build()
+
+    private val captchaRegex = """window\.__captcha\s*=\s*\{\s*needed\s*:\s*true\s*,?""".toRegex()
 
     companion object {
         val dateFormat by lazy {
@@ -229,7 +234,7 @@ class Japscan :
 
     override fun chapterFromElement(element: Element): SChapter {
         // Only search for a tag with any attribute containing manga/manhua/manhwa
-        val urlPairs = element.getElementsByTag("a")
+        val urlPairs = (element.getElementsContainingText("Chapitre") + element.getElementsContainingText("Volume"))
             .mapNotNull { el ->
                 // Find the first attribute whose value matches the chapter URL pattern
                 val attrMatch = el.attributes().asList().firstOrNull { attr ->
@@ -280,25 +285,63 @@ class Japscan :
         dateFormat.parse(date)!!.time
     }.getOrDefault(0L)
 
-    @Serializable
-    class ChapterDetails(
-        val imagesLink: List<String>,
-    )
-
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
         val interfaceName = randomString()
+        val context = Injekt.get<Application>()
+        val isReader = Exception().stackTrace.any { it.className.contains("reader") }
 
         val handler = Handler(Looper.getMainLooper())
         val latch = CountDownLatch(1)
         val jsInterface = JsInterface(latch)
         var webView: WebView? = null
-        val request = client.newCall(GET("$internalBaseUrl${chapter.url}")).execute()
-        val pageContent = request.body.string()
-        val pValue = Regex("""p:\s*'([^']*)'""").find(pageContent)?.groups?.get(1)?.value
-        val vValue = Regex("""v:\s*'([^']*)'""").find(pageContent)?.groups?.get(1)?.value
+        var request: Response = client.newCall(GET("$internalBaseUrl${chapter.url}", headers)).execute()
+        var pageContent = request.body.string()
+        val matchResult = captchaRegex.find(pageContent)
+
+        if (matchResult != null) {
+            try {
+                val intent = Intent().apply {
+                    component = ComponentName(context, "eu.kanade.tachiyomi.ui.webview.WebViewActivity")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra("url_key", "$internalBaseUrl${chapter.url}")
+                    putExtra("source_key", id)
+                    putExtra("title_key", "Résolvez le captcha, fermez la Webview et réouvrez le chapitre.")
+                }
+
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                // Suwayomi etc.
+                throw Exception("Résolvez le captcha de ce chapitre depuis la WebView et réouvrez le chapitre.")
+            }
+            var captchaWait = 0
+            while (captchaWait < 15) {
+                Thread.sleep(5000)
+                request = client.newCall(GET("$internalBaseUrl${chapter.url}", headers)).execute()
+                pageContent = request.body.string()
+                val isGood = captchaRegex.find(pageContent)
+                if (isGood == null) {
+                    val closeIntent = Intent().apply {
+                        val targetClass = if (isReader) {
+                            "eu.kanade.tachiyomi.ui.reader.ReaderActivity"
+                        } else {
+                            "eu.kanade.tachiyomi.ui.main.MainActivity"
+                        }
+                        component = ComponentName(context, targetClass)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    }
+                    context.startActivity(closeIntent)
+                    break
+                } else {
+                    captchaWait++
+                }
+            }
+            if (captchaWait >= 15) {
+                throw Exception("Résolvez le captcha, fermez la Webview et réouvrez le chapitre.")
+            }
+        }
 
         handler.post {
-            val innerWv = WebView(Injekt.get<Application>())
+            val innerWv = WebView(context)
 
             webView = innerWv
             innerWv.settings.domStorageEnabled = true
@@ -308,27 +351,123 @@ class Japscan :
             innerWv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             innerWv.addJavascriptInterface(jsInterface, interfaceName)
 
+            /*innerWv.webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
+                    Log.println(
+                        when (consoleMessage.messageLevel()!!) {
+                            ConsoleMessage.MessageLevel.TIP -> Log.VERBOSE
+                            ConsoleMessage.MessageLevel.DEBUG -> Log.DEBUG
+                            ConsoleMessage.MessageLevel.LOG -> Log.INFO
+                            ConsoleMessage.MessageLevel.WARNING -> Log.WARN
+                            ConsoleMessage.MessageLevel.ERROR -> Log.ERROR
+                        },
+                        "Japscan",
+                        "${consoleMessage.sourceId()}:${consoleMessage.lineNumber()} ${consoleMessage.message()}",
+                    )
+
+                    return super.onConsoleMessage(consoleMessage)
+                }
+            }*/
+
             innerWv.webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     view?.evaluateJavascript(
-                        """
-                            Object.defineProperty(Object.prototype, 'imagesLink', {
-                                set: function(value) {
-                                    window.$interfaceName.passPayload(JSON.stringify(value));
-                                    Object.defineProperty(this, '_imagesLink', {
-                                        value: value,
-                                        writable: true,
-                                        enumerable: false,
-                                        configurable: true
-                                    });
-                                },
-                                get: function() {
-                                    return this._imagesLink;
-                                },
-                                enumerable: false,
-                                configurable: true
-                            });
+                        $$"""
+                            function waitForRC(callback) {
+                                if (window.__rc) {
+                                    callback();
+                                } else {
+                                    setTimeout(() => waitForRC(callback), 100);
+                                }
+                            }
+
+                            const originalReplace = String.prototype.replace;
+
+                            function tryDecodeBase64ToJsonKeysOnly(str) {
+                              const s = String(str).trim();
+                              if (!/^[A-Za-z0-9+/]+={0,2}$/.test(s) || s.length % 4 === 1) return null;
+                              try {
+                                const bin = atob(s);
+                                const utf8 = decodeURIComponent(
+                                  Array.from(bin, c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')
+                                );
+                                if(!utf8.includes(location.pathname.replaceAll("/", "\\/"))) return null;
+                                const parsed = JSON.parse(utf8);
+                                return parsed
+                              } catch (e) {
+                                return null;
+                              }
+                              return null;
+                            }
+
+                            String.prototype.replace = function(searchValue, replaceValue) {
+                              const receiver = this;
+
+                              const effectiveReplace = (typeof replaceValue === 'function')
+                                ? function(...args) { return replaceValue.apply(this, args); }
+                                : replaceValue;
+
+                              const rawResult = originalReplace.call(receiver, searchValue, effectiveReplace);
+
+                              if (typeof rawResult === 'string') {
+                                const parsed = tryDecodeBase64ToJsonKeysOnly(rawResult);
+                                if (parsed) {
+                                  waitForRC(() => create(parsed))
+                                }
+                              }
+
+                              return rawResult;
+                            };
+
+                            function findFirstArray(obj) {
+                              let found = null;
+                              (function visit(value) {
+                                if (found) return;
+                                if (value && typeof value === 'object') {
+                                  if (Array.isArray(value)) {
+                                    found = value;
+                                    return;
+                                  }
+                                  for (const k in value) {
+                                    if (Object.prototype.hasOwnProperty.call(value, k)) {
+                                      visit(value[k]);
+                                      if (found) return;
+                                    }
+                                  }
+                                }
+                              })(obj);
+                              return found;
+                            }
+
+                            function create(parsed) {
+                                let arr = findFirstArray(parsed)
+                                const arrLen = arr.length;
+                                const chapterMatch = location.pathname.match(/\/(\d+)(?:\/|$)/);
+                                const chapterNum = chapterMatch ? Number(chapterMatch[1]) : null;
+                                let candidate = null;
+                                (function visit(obj) {
+                                    if (candidate) return;
+                                        if (obj && typeof obj === 'object') {
+                                            for (const k in obj) {
+                                                if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+                                                const v = obj[k];
+                                                if (typeof v === 'number' && Number.isFinite(v) && Math.floor(v) === v) {
+                                                const n = v;
+                                                if (n > 0 && n <= arrLen && n !== chapterNum) { candidate = n; return; }
+                                            }
+                                            if (typeof v === 'string' && /^[0-9]+$/.test(v)) {
+                                                const n = Number(v);
+                                                if (n > 0 && n <= arrLen && n !== chapterNum) { candidate = n; return; }
+                                            }
+                                            if (typeof v === 'object') visit(v);
+                                            if (candidate) return;
+                                        }
+                                    }
+                                })(parsed);
+                                const finalNum = candidate || chapterNum || 0;
+                                window.$$interfaceName.passPayload(JSON.stringify(arr), window.__rc.p, window.__rc.v, finalNum.toString());
+                            }
                         """.trimIndent(),
                     ) {}
                 }
@@ -340,21 +479,23 @@ class Japscan :
             )
         }
 
-        latch.await(10, TimeUnit.SECONDS)
+        latch.await(30, TimeUnit.SECONDS)
         handler.post { webView?.destroy() }
 
         if (latch.count == 1L) {
             throw Exception("Erreur lors de la récupération des pages")
         }
-
         val baseUrlHost = internalBaseUrl.toHttpUrl().host.substringAfter("www.")
-        val images = jsInterface
-            .images
-            .filter { it.toHttpUrl().host.endsWith(baseUrlHost) } // Pages not served through their CDN are probably ads
+        val images = jsInterface.images
+            .filter { it.toHttpUrl().host.endsWith(baseUrlHost) }
             .mapIndexed { i, url ->
-                Page(i, imageUrl = "$url&$pValue=$vValue")
+                if (i != jsInterface.pi) {
+                    Page(i, imageUrl = "$url&${jsInterface.p}=${jsInterface.v}")
+                } else {
+                    null
+                }
             }
-
+            .filterNotNull()
         return Observable.just(images)
     }
 
@@ -368,8 +509,8 @@ class Japscan :
     private class PageList(pages: Array<Int>) : Filter.Select<Int>("Page #", arrayOf(0, *pages))
 
     // Prefs
-    override fun setupPreferenceScreen(screen: androidx.preference.PreferenceScreen) {
-        val chapterListPref = androidx.preference.ListPreference(screen.context).apply {
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        val chapterListPref = ListPreference(screen.context).apply {
             key = SHOW_SPOILER_CHAPTERS_TITLE
             title = SHOW_SPOILER_CHAPTERS_TITLE
             entries = prefsEntries
@@ -394,17 +535,33 @@ class Japscan :
     internal class JsInterface(private val latch: CountDownLatch) {
         var images: List<String> = listOf()
             private set
+        var p: String = ""
+            private set
+        var v: String = ""
+            private set
+        var pi: Int = -1
+            private set
 
         @JavascriptInterface
         @Suppress("UNUSED")
-        fun passPayload(rawData: String) {
+        fun passPayload(rawData: String, p: String, v: String, pi: String) {
             try {
                 images = rawData.parseAs<List<String>>()
                     .map { "$it?y=1" }
+                this.p = p
+                this.v = v
+                this.pi = pi.toInt()
                 latch.countDown()
             } catch (_: Exception) {
                 return
             }
         }
+
+        /*
+        @JavascriptInterface
+        @Suppress("UNUSED")
+        fun log(txt: String) {
+            Log.e("Japscan", txt)
+        }*/
     }
 }

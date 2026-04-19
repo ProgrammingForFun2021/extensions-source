@@ -2,14 +2,13 @@ package eu.kanade.tachiyomi.extension.all.lunaranime
 
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
+import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
-import keiyoushi.lib.cryptoaes.CryptoAES
-import keiyoushi.utils.extractNextJs
 import keiyoushi.utils.parseAs
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -19,13 +18,11 @@ import okhttp3.Response
 import rx.Observable
 import java.security.MessageDigest
 
-class LunarAnime : HttpSource() {
+class LunarAnime(override val lang: String, private val internalLang: String = lang) : HttpSource() {
 
     override val name = "Lunar Manga"
 
     override val baseUrl = "https://lunaranime.ru"
-
-    override val lang = "all"
 
     override val supportsLatest = true
 
@@ -49,6 +46,8 @@ class LunarAnime : HttpSource() {
     override fun headersBuilder(): Headers.Builder = super.headersBuilder()
         .add("Referer", "$baseUrl/")
 
+    private val crypto = LunarDecryptor(client, API_URL)
+
     // ============================== Popular ===============================
 
     override fun popularMangaRequest(page: Int): Request = searchMangaRequest(page, "", FilterList())
@@ -58,11 +57,15 @@ class LunarAnime : HttpSource() {
     // =============================== Latest ===============================
 
     override fun latestUpdatesRequest(page: Int): Request {
-        val url = API_URL.toHttpUrl().newBuilder()
-            .addPathSegments("api/manga/recent")
-            .addQueryParameter("page", page.toString())
-            .addQueryParameter("limit", "30")
-            .build()
+        val url = API_URL.toHttpUrl().newBuilder().apply {
+            addPathSegments("api/manga/recent")
+            addQueryParameter("page", page.toString())
+            addQueryParameter("limit", "30")
+
+            if (lang != "all") {
+                addQueryParameter("language", internalLang)
+            }
+        }.build()
         return GET(url.toString(), headers)
     }
 
@@ -83,6 +86,10 @@ class LunarAnime : HttpSource() {
             addQueryParameter("limit", "30")
             if (query.isNotBlank()) {
                 addQueryParameter("query", query)
+            }
+
+            if (lang != "all") {
+                addQueryParameter("language", internalLang)
             }
 
             filters.forEach { filter ->
@@ -161,7 +168,9 @@ class LunarAnime : HttpSource() {
 
         val result = client.newCall(request).execute().parseAs<LunarChapterListResponse>()
 
-        result.data.map { chapter ->
+        result.data.filter {
+            lang == "all" || it.language == internalLang
+        }.map { chapter ->
             val isLocked = passwordInfo.hasSeriesPassword ||
                 passwordInfo.chapterPasswords.any {
                     it.chapterNumber == chapter.chapter && (it.language == null || it.language == chapter.language)
@@ -175,31 +184,14 @@ class LunarAnime : HttpSource() {
     override fun chapterListParse(response: Response): List<SChapter> = throw UnsupportedOperationException("Not used.")
 
     // =============================== Pages ================================
-
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> = Observable.fromCallable {
-        val pageUrl = baseUrl + chapter.url.substringBefore("?")
-        val pageRequest = GET(pageUrl, headers)
-        val secretKey = client.newCall(pageRequest).execute()
-            .extractNextJs<SecretKeyDto>()?.secretKey
-            ?: return@fromCallable emptyList()
+        val chapterUrl = (baseUrl + chapter.url).toHttpUrl()
+        val language = chapterUrl.queryParameter("lang") ?: "en"
+        val (slug, chapterNumber) = chapterUrl.pathSegments.takeLast(2)
 
-        val url = (API_URL + "/api" + chapter.url).toHttpUrl()
-        val request = GET(url.toString(), headers)
-        val result = client.newCall(request).execute().parseAs<LunarPageListResponse>()
-
-        val images = result.data?.let { data ->
-            val sessionData = data.sessionData
-            if (!sessionData.isNullOrBlank()) {
-                val key = secretKey.sha256()
-                val iv = ByteArray(16) { 0 }
-                val decrypted = CryptoAES.decrypt(sessionData, key, iv)
-                decrypted.parseAs<LunarPageListDecrypted>().data.images
-            } else {
-                data.images
-            }
-        } ?: emptyList()
-
-        images.mapIndexed { index, imageUrl ->
+        // I see decryption is always required now
+        val decryptedImages = crypto.decryptChapterImages(chapterUrl.toString(), slug, chapterNumber, language)
+        decryptedImages.mapIndexed { index, imageUrl ->
             Page(index, chapter.url, imageUrl)
         }
     }
@@ -220,13 +212,25 @@ class LunarAnime : HttpSource() {
 
     // ============================== Filters ===============================
 
-    override fun getFilterList(): FilterList = FilterList(
-        StatusFilter(),
-        TypeFilter(),
-        LanguageFilter(),
-        YearFilter(),
-        GenreFilter(),
-    )
+    override fun getFilterList(): FilterList {
+        val filters = mutableListOf<Filter<*>>(
+            StatusFilter(),
+            TypeFilter(),
+        )
+
+        if (lang == "all") {
+            filters.add(LanguageFilter())
+        }
+
+        filters.addAll(
+            listOf(
+                YearFilter(),
+                GenreFilter(),
+            ),
+        )
+
+        return FilterList(filters)
+    }
 
     private fun String.sha256(): ByteArray = MessageDigest.getInstance("SHA-256").digest(toByteArray())
 

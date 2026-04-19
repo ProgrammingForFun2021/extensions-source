@@ -46,7 +46,22 @@ class ScanManga :
 
     override val supportsLatest = true
 
-    protected val preferences by getPreferencesLazy()
+    private val preferences by getPreferencesLazy()
+
+    override val client = super.client.newBuilder()
+        .addNetworkInterceptor { chain ->
+            val originalRequest = chain.request()
+            val header = originalRequest.header("X-Requested-With")
+            if (header != null && header.isEmpty()) {
+                return@addNetworkInterceptor chain.proceed(
+                    originalRequest.newBuilder()
+                        .removeHeader("X-Requested-With")
+                        .build(),
+                )
+            }
+            return@addNetworkInterceptor chain.proceed(originalRequest)
+        }
+        .build()
 
     override fun headersBuilder(): Headers.Builder {
         val currentChromeVersion = super.headersBuilder().build().get("User-Agent")?.let {
@@ -188,9 +203,12 @@ class ScanManga :
 
     // Pages
     private fun decodeHunter(obfuscatedJs: String): String {
-        val regex = Regex("""eval\(function\(\w,\w,\w,\w,\w,\w\)\{.*?\}\("([^"]+)",\d+,"([^"]+)",(\d+),(\d+),\d+\)\)""")
-        val (encoded, mask, intervalStr, optionStr) = regex.find(obfuscatedJs)?.destructured
-            ?: error("Failed to match obfuscation pattern: $obfuscatedJs")
+        val markers = markerManager::getMarkers
+
+        val (encoded, mask, intervalStr, optionStr) = runSafe {
+            Regex(markers().regexes.hunterObfuscation).find(obfuscatedJs)?.destructured
+                ?: error("Failed to match pattern")
+        }
 
         val interval = intervalStr.toInt()
         val option = optionStr.toInt()
@@ -249,40 +267,65 @@ class ScanManga :
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
-        val packedScript = document.selectFirst("script:containsData(eval\\(function\\()")!!.data()
+        val markers = markerManager::getMarkers
 
+        val packedScript = runSafe { document.selectFirst(markers().selectors.packedScript)!!.data() }
         val unpackedScript = decodeHunter(packedScript)
-        val parametersRegex = Regex("""sml = '([^']+)';\n?.*var sme = '([^']+)'""")
 
-        val (sml, sme) = parametersRegex.find(unpackedScript)?.destructured
-            ?: error("Failed to extract parameters from script.")
+        // parametersRegex
+        val (sml) = runSafe {
+            Regex(markers().regexes.smlParam).find(unpackedScript)?.destructured
+                ?: error("Failed to extract sml parameter.")
+        }
 
-        val chapterInfoRegex = Regex("""const idc = (\d+)""")
-        val (chapterId) = chapterInfoRegex.find(packedScript)?.destructured
-            ?: error("Failed to extract chapter ID.")
+        val (sme) = runSafe {
+            Regex(markers().regexes.smeParam).find(unpackedScript)?.destructured
+                ?: error("Failed to extract sme parameter.")
+        }
 
-        val mediaType = "application/json; charset=UTF-8".toMediaType()
-        val requestBody = """{"a":"$sme","b":"$sml","c":"${getFingerprint()}"}"""
+        val (chapterId) = runSafe {
+            Regex(markers().regexes.chapterInfo).find(packedScript)?.destructured
+                ?: error("Failed to extract chapter ID.")
+        }
 
-        val documentUrl = document.baseUri().toHttpUrl()
-
-        val pageListRequest = POST(
-            "https://bqj.${baseUrl.toHttpUrl().topPrivateDomain()}/lel/$chapterId.json",
-            headers.newBuilder()
-                .add("Origin", "${documentUrl.scheme}://${documentUrl.host}")
-                .add("Referer", documentUrl.toString())
-                .add("Token", "yf")
-                .build(),
-            requestBody.toRequestBody(mediaType),
+        val availableVariables = mapOf(
+            "sme" to sme,
+            "sml" to sml,
+            "fingerprint" to getFingerprint(),
+            "chapterId" to chapterId,
+            "topDomain" to (baseUrl.toHttpUrl().topPrivateDomain() ?: ""),
         )
 
-        val lelResponse = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-            .newCall(pageListRequest).execute().use { response ->
-                if (!response.isSuccessful) {
-                    error("Unexpected error while fetching lel.")
+        val mediaType = "application/json; charset=UTF-8".toMediaType()
+        val documentUrl = document.baseUri().toHttpUrl()
+
+        val lelResponse = runSafe {
+            val requestBody = injectVariables(markers().apiConfig.requestBody, availableVariables)
+            val pageListUrl = injectVariables(markers().apiConfig.pageListUrl, availableVariables)
+            val requestHeaders = headers.newBuilder()
+                .add("Origin", "${documentUrl.scheme}://${documentUrl.host}")
+                .add("Referer", documentUrl.toString())
+                .apply {
+                    markers().apiConfig.headers?.forEach { (key, value) ->
+                        add(key, injectVariables(value, availableVariables))
+                    }
                 }
-                dataAPI(response.body.string(), chapterId.toInt())
-            }
+                .build()
+
+            val pageListRequest = POST(
+                url = pageListUrl,
+                headers = requestHeaders,
+                body = requestBody.toRequestBody(mediaType),
+            )
+
+            client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+                .newCall(pageListRequest).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        error("Unexpected error while fetching lel. HTTP ${response.code}")
+                    }
+                    dataAPI(response.body.string(), chapterId.toInt())
+                }
+        }
 
         return lelResponse.generateImageUrls().map { Page(it.first, imageUrl = it.second) }
     }
@@ -340,7 +383,7 @@ class ScanManga :
 
             try {
                 latch.await(5, TimeUnit.SECONDS)
-            } catch (e: InterruptedException) {
+            } catch (_: InterruptedException) {
             }
 
             val decodedValue = String(Base64.decode(returnValue, Base64.DEFAULT))
@@ -370,5 +413,41 @@ class ScanManga :
                 preferences.edit().putString(key, newValue as String).commit()
             }
         }.also { screen.addPreference(it) }
+
+        EditTextPreference(screen.context).apply {
+            key = MarkerManager.PREF_MARKERS_JSON
+            title = "Debug: Markers JSON"
+            summary =
+                "For debugging purposes. Displays the raw JSON string of the markers used for decoding obfuscated scripts. Automatically updated when markers are refreshed."
+
+            setDefaultValue(null)
+            dialogTitle = "Markers JSON"
+            dialogMessage =
+                "This is the raw JSON string of the markers used for decoding obfuscated scripts. It is automatically updated when markers are refreshed. You can use this information for debugging purposes."
+
+            setOnPreferenceChangeListener { _, _ ->
+                // Do not allow manual changes, this is for display only
+                false
+            }
+        }.also { screen.addPreference(it) }
+    }
+
+    private val markerManager by lazy { MarkerManager(client, preferences) }
+
+    private fun injectVariables(template: String, variables: Map<String, String>): String {
+        var result = template
+        for ((key, value) in variables) {
+            result = result.replace("{$key}", value)
+        }
+        return result
+    }
+
+    fun <T> runSafe(fn: () -> T): T = runCatching { fn() }.getOrElse {
+        markerManager.fetchWithRetry()
+
+        // Second attempt
+        runCatching { fn() }.getOrElse { throwable ->
+            markerManager.handleFatalFailure(throwable)
+        }
     }
 }
