@@ -73,10 +73,6 @@ class HotManga :
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS).build()
 
-    override fun headersBuilder() = super.headersBuilder()
-        .set("Referer", "$baseUrl/")
-        .set("Host", baseUrl.replace("https://", ""))
-
     private val json: Json = Json {
         ignoreUnknownKeys = true
         coerceInputValues = true
@@ -223,7 +219,7 @@ class HotManga :
     override fun pageListParse(response: Response): List<Page> {
         val list = mutableListOf<Page>()
         val chapterPage = response.asJsoup()
-        val elements = chapterPage.select("div.relative")
+        val elements = chapterPage.select("div.mx-auto.grid.justify-center > div.relative")
         for (elem in elements) {
             val imgElem = elem.select("img")
             val imgSrc = imgElem.attr("src")
