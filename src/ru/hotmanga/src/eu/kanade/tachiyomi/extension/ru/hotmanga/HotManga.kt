@@ -154,9 +154,9 @@ class HotManga :
     override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        // TODO Add filters, use page param, investigate limit param
+        // TODO Add filters, use page param
         val apiPathVal = apiPathsMap[baseUrl]
-        val apiString = "$apiPathVal/books/search?filter[query]=$query&limit=24"
+        val apiString = "$apiPathVal/books/search?filter[query]=$query"
         return GET("${baseUrl}$apiString", headers)
     }
 
